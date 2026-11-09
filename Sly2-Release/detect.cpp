@@ -535,3 +535,30 @@ void PostLoadDetector(LO* object)
             else RemoveDetectorTarget(detector, target);
         }
 }
+
+// (co-op, coop.h) would this detector see the other game's player at these points (its target point posDet, as
+// NDetectState's, and its body's point posAi for the line of sight)? NDetectState's kind 0 (first sight) without the
+// object tests (touch, hiding by an interaction: the other game tells its own)
+bool FCoopDetectorSeesPoint(DETECTOR* pdet, const glm::vec3& posAi, const glm::vec3& posDet)
+{
+    if (!pdet || pdet->fNever || FGamePausedForAi()) return false;
+    if (pdet->fAlways) return true;
+    if (FSightShapeBlocked(pdet, posDet)) return false;
+    if (!pdet->ploVolume || !FInsideShape(pdet->ploVolume, posDet)) return false;
+    if (pdet->ploVolume2 && !FInsideShape(pdet->ploVolume2, posDet)) return false;
+    if (pdet->grf & 2) return true;
+    const glm::vec3 eye = PosDetectorEye(pdet);
+    const glm::vec3 mn = glm::min(eye, posAi), mx = glm::max(eye, posAi);
+    std::vector<SOE*> apsoe;
+    for (OXA* poxa : g_physw.apoxaActive)
+    {
+        if (mx.x < poxa->posMin.x || poxa->posMax.x < mn.x || mx.y < poxa->posMin.y || poxa->posMax.y < mn.y ||
+            mx.z < poxa->posMin.z || poxa->posMax.z < mn.z)
+            continue;
+        for (SOE* psoe : poxa->apsoe)
+            if (FBlocks(pdet, psoe) && apsoe.size() < 0x100) apsoe.push_back(psoe);
+    }
+    if (apsoe.empty()) return true;
+    LSG lsg;
+    return PsoeHitTestLineObjects(0, eye, posAi, apsoe, &lsg) == nullptr;
+}

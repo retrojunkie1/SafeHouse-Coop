@@ -14,6 +14,8 @@
 #include "glob.h"
 #include "aihit.h"
 #include "guard.h"
+#include "stepphys.h"
+#include "aipursuit.h"
 #include "detect.h"
 #include "disc.h"
 #include "lo.h"
@@ -48,7 +50,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 10;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 11;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -337,6 +339,8 @@ struct POSE
     int iwrec = -1;
     int oidPlayer = -1;
     glm::vec3 posPlayer{0.0f};   // the character's place (PosLoWorld)
+    glm::vec3 posAi{0.0f}, posDet{0.0f};   // its points for the guards' eyes (NDetectState's)
+    bool fUnseen = false;        // not to be seen (knocked out, a script's hiding, the safe house)
     TREEPOSE tree;
     double tRecv = 0.0;
 };
@@ -393,6 +397,7 @@ std::unordered_map<uint64_t, double> s_mptOwnedJoin; // host: the joiner's guard
 std::unordered_map<uint64_t, double> s_mptPoseJoin;  // host: the last pose of each from the joiner
 std::unordered_map<uint64_t, double> s_mptBlock;     // host: not given to the joiner again before then
 std::unordered_set<uint64_t> s_setJoinHas;          // host: the guards in the joiner's world (its last message)
+std::unordered_map<uint64_t, double> s_mptSeesHost;  // host: the joiner's guards that would see the host, when
 std::unordered_map<uint64_t, glm::vec3> s_mpposLast; // the last place of each guard this game ran
 std::unordered_set<uint64_t> s_setRanLast;           // the guards this game ran and had in its world last time
 std::unordered_map<uint64_t, double> s_mptEngaged;   // host: when each guard was last after a player (seeing,
@@ -477,6 +482,7 @@ void ResetMirror()
     s_mptBlock.clear();
     s_mptEngaged.clear();
     s_setJoinHas.clear();
+    s_mptSeesHost.clear();
     s_mpposLast.clear();
     s_setRanLast.clear();
 }
@@ -605,6 +611,26 @@ bool FGuardEngaged(SW* psw, ALO* palo)
     return false;
 }
 
+// a guard this game runs would see the other game's player (its detector watches players: it has an entry for this
+// game's)
+bool FGuardSeesRemote(SW* psw, ALO* palo)
+{
+    if (s_aposeRemote.empty()) return false;
+    const POSE& p = s_aposeRemote.back();
+    if (p.iwrec != g_transition.iwrecCur || p.oidPlayer < 0 || p.fUnseen || TNow() - p.tRecv > 0.5) return false;
+    GUARD* pg = PguardFromLo(palo);
+    LO* ploMe = PloPoCurrent(psw);
+    if (!pg || !pg->pdet || !ploMe || !palo->fInWorld) return false;
+    bool fWatches = false;
+    for (const DETENTRY& e : pg->pdet->ae)
+    {
+        const LO* plo = e.plo;
+        while (plo && plo->paloParent) plo = plo->paloParent;
+        if (plo == ploMe) { fWatches = true; break; }
+    }
+    return fWatches && FCoopDetectorSeesPoint(pg->pdet, p.posAi, p.posDet);
+}
+
 // host: who runs each guard. A calm guard: the nearer player's game (with a margin). A guard after a player (seen,
 // suspicious, chasing, searching: the last c_dtEngagedHold s) stays in the game it runs in, so it keeps after the
 // player it found while the other one passes by.
@@ -625,7 +651,14 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
         if (!fWas && FGuardEngaged(psw, palo)) s_mptEngaged[key] = t;   // (the host's guard after the host)
         const auto ie = s_mptEngaged.find(key);
         const bool fEngaged = ie != s_mptEngaged.end() && t - ie->second < c_dtEngagedHold;
-        bool fJoinRuns = fEngaged ? fWas : (fWas ? dJ < dH + 600.0f : dJ + 600.0f < dH);
+        // the other player in its sight: it goes to that player's game, where its own eyes see that player
+        const bool fSeesJoin = !fWas && !fEngaged && FGuardSeesRemote(psw, palo);
+        const auto is = s_mptSeesHost.find(key);
+        const bool fSeesHost = fWas && !fEngaged && is != s_mptSeesHost.end() && t - is->second < 0.4;
+        bool fJoinRuns = fEngaged ? fWas : fSeesJoin ? true : fSeesHost ? false : (fWas ? dJ < dH + 600.0f : dJ + 600.0f < dH);
+        if (fSeesJoin) std::printf("co-op: guard %d sees %s: %s's game runs it\n", palo->oid, s_nameRemote.c_str(), s_nameRemote.c_str());
+        if (fSeesHost) std::printf("co-op: guard %d sees the host: the host's game runs it\n", palo->oid);
+        if (fSeesJoin) s_mptBlock.erase(key);
         if (!fWas && fJoinRuns)
             if (auto ib = s_mptBlock.find(key); ib != s_mptBlock.end() && t < ib->second) fJoinRuns = false;
         // (given but no pose came back: the joiner has no such guard here; it stays the host's for a while)
@@ -729,7 +762,8 @@ void SendActors(SW* psw)
     for (const auto& s : asel)
     {
         w.Put<uint64_t>(s.second.first);
-        w.Put<uint8_t>(!fHost && FGuardEngaged(psw, s.second.second) ? 1 : 0);   // (the joiner's guard after the joiner)
+        // (the joiner's guard: 1 after the joiner, 2 the host in its sight)
+        w.Put<uint8_t>(fHost ? 0 : uint8_t((FGuardEngaged(psw, s.second.second) ? 1 : 0) | (FGuardSeesRemote(psw, s.second.second) ? 2 : 0)));
         PutTree(w, psw, s.second.second, cxfLeft);
     }
     if (!s_ppeer) return;
@@ -890,10 +924,11 @@ void OnActors(READER& r)
     for (int i = 0; i < c && r.fOk; ++i)
     {
         const uint64_t key = r.Get<uint64_t>();
-        const bool fEngaged = r.Get<uint8_t>() != 0;
+        const uint8_t grfEng = r.Get<uint8_t>();
         TREEPOSE tree;
         if (!FGetTree(r, tree, cxfLeft)) return;
-        if (fEngaged && !fFromHost) s_mptEngaged[key] = TNow();
+        if ((grfEng & 1) && !fFromHost) s_mptEngaged[key] = TNow();
+        if ((grfEng & 2) && !fFromHost) s_mptSeesHost[key] = TNow();
         snap.mpkey.emplace(key, std::move(tree));
     }
     if (!r.fOk) return;
@@ -1061,6 +1096,9 @@ void OnState(READER& r)
     pose.iwrec = r.Get<int32_t>();
     pose.oidPlayer = r.Get<int32_t>();
     pose.posPlayer = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
+    pose.posAi = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
+    pose.posDet = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
+    pose.fUnseen = r.Get<uint8_t>() != 0;
     int cxfLeft = c_cxfMax;
     if (!FGetTree(r, pose.tree, cxfLeft)) return;
     pose.tRecv = TNow();
@@ -1163,7 +1201,8 @@ void SendState(SW* psw)
     if (!fPlayer)
     {
         w.Put<int32_t>(-1);
-        w.Put<float>(0.0f), w.Put<float>(0.0f), w.Put<float>(0.0f);
+        for (int i = 0; i < 9; ++i) w.Put<float>(0.0f);
+        w.Put<uint8_t>(1);
         w.Put<uint16_t>(0);
         Send(s_ppeer, w, c_chanState, false);
         return;
@@ -1172,6 +1211,15 @@ void SendState(SW* psw)
     {
         const glm::vec3 p = PosLoWorld(plo);
         w.Put<float>(p.x), w.Put<float>(p.y), w.Put<float>(p.z);
+        const glm::vec3 pa = PosAi(plo);
+        glm::vec3 pd = pa;
+        if (FCidDerivedFrom(plo->Cid(), 0x33)) pd += glm::vec3(StepPhysOf(static_cast<ALO*>(plo)).vecBase);
+        w.Put<float>(pa.x), w.Put<float>(pa.y), w.Put<float>(pa.z);
+        w.Put<float>(pd.x), w.Put<float>(pd.y), w.Put<float>(pd.z);
+        const ACTOR* pact = FCidDerivedFrom(plo->Cid(), 0x34) ? PactorFromLo(plo) : nullptr;
+        const bool fUnseen = (pact && pact->n11AC) || (FCidDerivedFrom(plo->Cid(), 0x32) && NPlayerStatus77(plo) == 2) ||
+                             FCidDerivedFrom(plo->Cid(), 0x46);
+        w.Put<uint8_t>(fUnseen ? 1 : 0);
     }
     int cxfLeft = c_cxfMax;
     PutTree(w, psw, static_cast<ALO*>(plo), cxfLeft);
