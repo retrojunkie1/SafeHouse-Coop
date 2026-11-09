@@ -63,6 +63,8 @@ bool FCoopSkipUpdate(const LO* plo);
 // (activate.cpp) the other player's character's place in this world: its surroundings are activated too (guards and
 // their pooled instances placed there, objects updated), so both games have the guards around both players
 bool FCoopActivationPos(glm::vec3& pos);
+// (activate.cpp) a proxy's instance row given back
+void CoopDetachProxyRow(SW* psw, LO* pproxy, int irow);
 // (game.cpp) after the step's world matrices are rebuilt from the local ones: the mirrored guards' poses written again
 void CoopAfterWorlds();
 bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm);

@@ -1213,3 +1213,6 @@ void LockProxyRowOf(SW* psw, LO* pproxy, LO* plo, bool fLock)
     we.afRowLocked[i] = fLock ? 1 : 0;
 }
 void UnlockProxyRowOf(SW* psw, LO* pproxy, LO* plo) { LockProxyRowOf(psw, pproxy, plo, false); }
+
+// (co-op, coop.h) an instance given back by its proxy (the joiner's pool follows the host's)
+void CoopDetachProxyRow(SW* psw, LO* pproxy, int irow) { DetachProxy(psw, pproxy, irow); }

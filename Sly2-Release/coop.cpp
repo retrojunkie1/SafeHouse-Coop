@@ -48,7 +48,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 6;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 7;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -529,6 +529,25 @@ void SendWorld(bool fForce)
 // A pooled guard (an instance of a world group, handed to the streaming proxy nearest a player) is keyed by its
 // proxy and its place in the group: the two games attach different instances to a proxy (the players stand in
 // different places), so the instance's own oid names different guards on the two sides.
+// a proxy's place in aploAll (the world file's load order: the same in both games; proxies' oids are shared)
+int64_t IploAll(SW* psw, const LO* plo)
+{
+    static uint32_t s_serial = 0;
+    static size_t s_c = 0;
+    static std::unordered_map<const LO*, int64_t> s_mp;
+    if (s_serial != psw->serial || s_c != psw->aploAll.size())
+    {
+        s_mp.clear();
+        for (size_t i = 0; i < psw->aploAll.size(); ++i) s_mp[psw->aploAll[i].get()] = int64_t(i);
+        s_serial = psw->serial, s_c = psw->aploAll.size();
+    }
+    auto it = s_mp.find(plo);
+    return it == s_mp.end() ? -1 : it->second;
+}
+uint64_t KeyProxy(uint64_t iproxy, int j) { return (1ull << 63) | (iproxy << 12) | uint64_t(j & 0xFFF); }
+bool FKeyPooled(uint64_t key) { return (key >> 63) != 0; }
+uint64_t IproxyFromKey(uint64_t key) { return (key & ~(1ull << 63)) >> 12; }
+
 void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
 {
     std::unordered_map<const LO*, uint64_t> mpinst;
@@ -541,14 +560,12 @@ void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
         {
             const LO* pproxy = we.aploRowOwner[irow];
             if (!pproxy) continue;
+            const int64_t iproxy = IploAll(psw, pproxy);
+            if (iproxy < 0) continue;
             for (int j = 0; j < we.cloLoaded; ++j)
             {
                 const size_t i = irow * size_t(we.cloLoaded) + size_t(j);
-                // (the proxy's place in the world: proxies share oids, their places are their own; 16 units a step)
-                const glm::vec3 p = irow < we.amatRow.size() ? glm::vec3(we.amatRow[irow][3]) : glm::vec3(0.0f);
-                auto q = [](float g) { return uint64_t(int64_t(std::lround(g / 16.0f)) & 0x3FFFF); };
-                if (i < we.aplo.size() && we.aplo[i])
-                    mpinst[we.aplo[i]] = (1ull << 63) | (q(p.x) << 45) | (q(p.y) << 27) | (q(p.z) << 9) | uint64_t(j & 0x1FF);
+                if (i < we.aplo.size() && we.aplo[i]) mpinst[we.aplo[i]] = KeyProxy(uint64_t(iproxy), j);
             }
         }
     }
@@ -646,25 +663,18 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
 
 // knocked out: a guard this game ran that left its world near this game's character (a guard far away leaves when
 // the pool takes it back, not knocked out)
-void FindDead(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot, std::vector<uint64_t>* paDeadNew)
+// knocked out: a guard this game runs whose one-time knock-out has happened (GUARD +0x330, JOBHIT3)
+void FindDead(SW*, const std::vector<std::pair<uint64_t, ALO*>>& aroot, std::vector<uint64_t>* paDeadNew)
 {
-    LO* plo = PloPoCurrent(psw);
-    const glm::vec3 posMe = plo && FCidDerivedFrom(plo->Cid(), 0x30) ? PosLoWorld(plo) : glm::vec3(1e9f);
-    std::unordered_set<uint64_t> setNow;
     for (const auto& [key, palo] : aroot)
-        if (palo->fInWorld && !FMirrored(key))
-        {
-            setNow.insert(key);
-            s_mpposLast[key] = PosRoot(palo);
-        }
-    for (uint64_t key : s_setRanLast)
-        if (!setNow.count(key) && !FMirrored(key) && glm::distance(s_mpposLast[key], posMe) < 3000.0f && !s_setDead.count(key))
-        {
-            s_setDead.insert(key);
-            if (paDeadNew) paDeadNew->push_back(key);
-            std::printf("co-op: guard %llx knocked out\n", (unsigned long long)key);
-        }
-    s_setRanLast = std::move(setNow);
+    {
+        if (FMirrored(key) || s_setDead.count(key)) continue;
+        GUARD* pg = PguardFromLo(palo);
+        if (!pg || !pg->f330) continue;
+        s_setDead.insert(key);
+        if (paDeadNew) paDeadNew->push_back(key);
+        std::printf("co-op: guard %llx knocked out\n", (unsigned long long)key);
+    }
 }
 
 // the poses of the guards this game runs, nearest the other player first; the host's message also carries its
@@ -857,6 +867,43 @@ void OnActors(READER& r)
     if (!s_asnap.empty() && snap.step <= s_asnap.back().step) return;
     s_asnap.push_back(std::move(snap));
     while (s_asnap.size() > 12) s_asnap.pop_front();
+}
+
+// joiner: the pool's instances placed at the proxies the host's are at (each game's pool places its instances by
+// its own history, so the two had different guards); a proxy the host has none at gives its instance back
+void SyncProxies(SW* psw)
+{
+    if (s_opt.mode != COOPMODE_Join || !FConnected() || !psw || g_transition.fPending) return;
+    if (s_iwrecRoster != g_transition.iwrecCur || s_stepLocal % 15) return;
+    std::unordered_set<uint64_t> setHost;
+    for (const auto& kv : s_mpRoster)
+        if (FKeyPooled(kv.first)) setHost.insert(IproxyFromKey(kv.first));
+    int cDetach = 0, cAttach = 0;
+    for (WE& we : psw->awe)
+        for (size_t irow = 0; irow < we.aploRowOwner.size(); ++irow)
+            if (LO* pproxy = we.aploRowOwner[irow])
+            {
+                const int64_t i = IploAll(psw, pproxy);
+                if (i >= 0 && !setHost.count(uint64_t(i)))
+                {
+                    CoopDetachProxyRow(psw, pproxy, int(irow));
+                    ++cDetach;
+                }
+            }
+    for (uint64_t i : setHost)
+    {
+        if (i >= psw->aploAll.size()) continue;
+        LO* pproxy = psw->aploAll[i].get();
+        auto it = psw->mpproxy.find(pproxy);
+        if (it == psw->mpproxy.end() || !it->second.airow.empty()) continue;
+        if (PloAttachProxy(psw, pproxy, 1)) ++cAttach;
+    }
+    static int s_cLog = 0;
+    if ((cDetach || cAttach) && s_cLog < 20)
+    {
+        ++s_cLog;
+        std::printf("co-op: guards placed as the host's: %d given back, %d placed\n", cDetach, cAttach);
+    }
 }
 
 // this game's guards by key, with their trees
@@ -1284,6 +1331,7 @@ void CoopStep(SW* psw)
         else FollowHost(psw);
         SendActors(psw);
     }
+    SyncProxies(psw);
     SendState(psw);
     StepRemote(psw);
     StepMirror(psw);
