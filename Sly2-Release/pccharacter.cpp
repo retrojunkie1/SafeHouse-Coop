@@ -1,6 +1,7 @@
 // PC addition, not in the original game: the debug menu's guest characters and outfits (pccharacter.h).
 // Nothing here runs unless the debug menu (Debug keys) asks for it.
 #include "pccharacter.h"
+#include "coop.h"
 #include "pcguard.h"
 #include "pcrc.h"
 #include "pcloader.h"
@@ -1662,12 +1663,14 @@ void UpdatePcChar(SW* psw, bool fDebugKeys)
 
 void AppendPcCharSceneAlos(std::vector<ALO*>& apalo)
 {
+    CoopAppendSceneAlos(apalo);   // (SafeHouse-Coop: the other player, coop.h)
     if (s_idefPuppet >= 0)
         for (ALO* palo : s_pup.apaloDraw) apalo.push_back(palo);
 }
 
 int NPcCharDrawOverride(const ALO* palo)
 {
+    if (const int nCoop = NCoopDrawOverride(palo); nCoop >= 0) return nCoop;   // (SafeHouse-Coop, coop.h)
     if (s_idefPuppet < 0 || !s_pup.proot) return -1;
     if (std::find(s_pup.apaloDraw.begin(), s_pup.apaloDraw.end(), palo) != s_pup.apaloDraw.end())
     {
@@ -1681,7 +1684,7 @@ int NPcCharDrawOverride(const ALO* palo)
 
 bool FPcCharTakeSceneRebuild()
 {
-    const bool f = s_fSceneRebuild;
+    const bool f = s_fSceneRebuild | FCoopTakeSceneRebuild();   // (SafeHouse-Coop: the other player's model, coop.h)
     s_fSceneRebuild = false;
     return f;
 }

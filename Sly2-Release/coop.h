@@ -1,0 +1,57 @@
+#pragma once
+
+// Online co-op (SafeHouse-Coop addition, not in the original game).
+//
+// Milestone 1, "see each other": two copies of the game connect over the internet (ENet, UDP). Each one sends its
+// player's pose 60 times a second (the game's own step rate), and draws the other player in its own world as a
+// puppet: the same character's model, taken from a kept copy of the current world (pcloader.h), posed with the
+// remote player's transform records. Both games still run their own world; sharing the world (guards, loot, jobs)
+// is milestone 2 (COOP.md).
+//
+// Starting it (command line, beside the launcher's --data-dir / --user-dir):
+//   --coop-host [PORT]          wait for a player on UDP PORT (default 27015)
+//   --coop-join HOST[:PORT]     connect to a host
+//   --coop-name NAME            the name shown to the other player (default: the computer's user name)
+// The environment variables SLY2_COOP_HOST / SLY2_COOP_JOIN / SLY2_COOP_NAME do the same.
+// Both players need the same disc region (USA, Europe or Japan): the handshake refuses a mismatch.
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+struct SW;
+struct ALO;
+
+enum COOPMODE
+{
+    COOPMODE_Off = 0,
+    COOPMODE_Host = 1,
+    COOPMODE_Join = 2,
+};
+
+struct COOPOPTIONS
+{
+    COOPMODE mode = COOPMODE_Off;
+    std::string host;        // join: the host's address
+    uint16_t port = 27015;
+    std::string name;
+};
+
+// main.cpp: one of the --coop-* arguments at argv[i] (advancing i past its value); false if it is not one.
+bool FCoopParseArg(int argc, char** argv, int& i);
+// main.cpp: after the arguments (the environment variables are read here too); starts networking when asked for.
+void CoopInit();
+void CoopShutdown();
+bool FCoopActive();
+
+// The world hooks (pcloader.h's, registered by coop.cpp): each step after the world's update, and a world's start.
+void CoopStep(SW* psw);
+void CoopOnWorldStarted(SW* psw);
+
+// The scene (pccharacter.cpp's hooks call these): the remote players' objects drawn in the current world.
+void CoopAppendSceneAlos(std::vector<ALO*>& apalo);
+int NCoopDrawOverride(const ALO* palo);   // -1: not a co-op object; 0: hidden; 1: drawn
+bool FCoopTakeSceneRebuild();
+
+// A line for the screen's corner ("co-op: waiting for a player on port 27015", "co-op: Ana connected, 48 ms").
+std::string SzCoopStatus();

@@ -19,6 +19,17 @@ add_executable(Sly2-Release ${sly2n_sources})
 target_include_directories(Sly2-Release PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CANE_ROOT}/Libraries/include" "${CANE_ROOT}/platform"
                            "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(Sly2-Release PRIVATE _CRT_SECURE_NO_WARNINGS)
+# SafeHouse-Coop: ENet (MIT, Libraries/enet) for online co-op (coop.cpp)
+set(sly2_enet_sources callbacks.c compress.c host.c list.c packet.c peer.c protocol.c unix.c win32.c)
+list(TRANSFORM sly2_enet_sources PREPEND "${CANE_ROOT}/Libraries/enet/")
+add_library(sly2_enet STATIC ${sly2_enet_sources})
+target_include_directories(sly2_enet PUBLIC "${CANE_ROOT}/Libraries/enet/include")
+if(WIN32)
+  target_link_libraries(sly2_enet PUBLIC ws2_32 winmm)
+else()
+  target_compile_definitions(sly2_enet PRIVATE HAS_SOCKLEN_T=1 HAS_POLL=1 HAS_FCNTL=1 HAS_MSGHDR_FLAGS=1 HAS_GETADDRINFO=1 HAS_GETNAMEINFO=1 HAS_INET_PTON=1 HAS_INET_NTOP=1)
+endif()
+target_link_libraries(Sly2-Release PRIVATE sly2_enet)
 # Development data: the checkout's build/ folder (the reference's RAM maps, the test memory card), used only by the
 # developer options (--loadmaps, the development card's fallback save). A git worktree uses its main checkout's, so
 # every working copy reads the same data. SLY2N_DEV_ROOT overrides it.

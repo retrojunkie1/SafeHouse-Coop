@@ -21,6 +21,7 @@
 #include "sound.h"
 #include "splicecheck.h"
 #include "animtest.h"
+#include "coop.h"
 #include "../platform/platform.h"
 
 #include <chrono>
@@ -297,6 +298,7 @@ int main(int argc, char** argv)
     std::vector<std::string> rest, physArgs;
     for (int i = 1; i < argc; ++i)
     {
+        if (FCoopParseArg(argc, argv, i)) continue;   // (SafeHouse-Coop: --coop-host / --coop-join / --coop-name, coop.h)
         if (!std::strcmp(argv[i], "--disc") && i + 1 < argc) disc = argv[++i];
         else if (!std::strcmp(argv[i], "--mods") && i + 1 < argc) { modsDir = argv[++i]; fModsGiven = true; }
         else if (!std::strcmp(argv[i], "--texture-pack") && i + 1 < argc) texturePack = argv[++i];
@@ -629,7 +631,10 @@ int main(int argc, char** argv)
         go.height = vo.height;
         go.loadmaps = vo.loadmaps;
         for (JOYPRESS& press : go.apress) press.frame -= go.vbBase;  // (--press-vblank-base: the reference's vblanks)
-        return RunGame(go);
+        CoopInit();   // (SafeHouse-Coop: coop.h)
+        const int nExit = RunGame(go);
+        CoopShutdown();
+        return nExit;
     }
     std::fprintf(stderr,
                  "usage: Sly2-Release [--disc disc.iso | --data-dir dir] --list-keys | --dump-world VA|SECTOR:CB [--out file]\n"
