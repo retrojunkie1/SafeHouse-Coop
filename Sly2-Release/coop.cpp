@@ -562,10 +562,18 @@ void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
             if (!pproxy) continue;
             const int64_t iproxy = IploAll(psw, pproxy);
             if (iproxy < 0) continue;
+            // (a proxy can hold more than one instance: which one, oldest first)
+            int isub = 0;
+            if (auto itp = psw->mpproxy.find(const_cast<LO*>(pproxy)); itp != psw->mpproxy.end())
+            {
+                const auto& a = itp->second.airow;
+                auto ir = std::find(a.begin(), a.end(), int(irow));
+                if (ir != a.end()) isub = int(a.end() - ir) - 1;
+            }
             for (int j = 0; j < we.cloLoaded; ++j)
             {
                 const size_t i = irow * size_t(we.cloLoaded) + size_t(j);
-                if (i < we.aplo.size() && we.aplo[i]) mpinst[we.aplo[i]] = KeyProxy(uint64_t(iproxy), j);
+                if (i < we.aplo.size() && we.aplo[i]) mpinst[we.aplo[i]] = KeyProxy(uint64_t(iproxy), (std::min(isub, 15) << 8) | (j & 0xFF));
             }
         }
     }
@@ -666,11 +674,19 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
 // knocked out: a guard this game runs whose one-time knock-out has happened (GUARD +0x330, JOBHIT3)
 void FindDead(SW*, const std::vector<std::pair<uint64_t, ALO*>>& aroot, std::vector<uint64_t>* paDeadNew)
 {
+    // (a pooled instance keeps the flag from its last use until it is placed again: only the change from up to down
+    // while this game runs it counts; the first look at a guard only notes its state)
+    static std::unordered_map<const ALO*, bool> s_mpfKoPrev;
+    static uint32_t s_serial = 0;
+    if (g_psw && s_serial != g_psw->serial) s_mpfKoPrev.clear(), s_serial = g_psw->serial;
     for (const auto& [key, palo] : aroot)
     {
-        if (FMirrored(key) || s_setDead.count(key)) continue;
         GUARD* pg = PguardFromLo(palo);
-        if (!pg || !pg->f330) continue;
+        const bool fKo = pg && pg->f330 && palo->fInWorld;
+        auto it = s_mpfKoPrev.find(palo);
+        const bool fWas = it == s_mpfKoPrev.end() ? true : it->second;
+        s_mpfKoPrev[palo] = fKo;
+        if (FMirrored(key) || s_setDead.count(key) || !fKo || fWas) continue;
         s_setDead.insert(key);
         if (paDeadNew) paDeadNew->push_back(key);
         std::printf("co-op: guard %llx knocked out\n", (unsigned long long)key);
