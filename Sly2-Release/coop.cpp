@@ -48,7 +48,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 7;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 8;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -389,6 +389,7 @@ std::unordered_set<uint64_t> s_setDead;            // knocked out (in either gam
 std::unordered_map<uint64_t, double> s_mptOwnedJoin; // host: the joiner's guards, since when
 std::unordered_map<uint64_t, double> s_mptPoseJoin;  // host: the last pose of each from the joiner
 std::unordered_map<uint64_t, double> s_mptBlock;     // host: not given to the joiner again before then
+std::unordered_set<uint64_t> s_setJoinHas;          // host: the guards in the joiner's world (its last message)
 std::unordered_map<uint64_t, glm::vec3> s_mpposLast; // the last place of each guard this game ran
 std::unordered_set<uint64_t> s_setRanLast;           // the guards this game ran and had in its world last time
 std::unordered_map<uint64_t, double> s_mptEngaged;   // host: when each guard was last after a player (seeing,
@@ -472,6 +473,7 @@ void ResetMirror()
     s_mptPoseJoin.clear();
     s_mptBlock.clear();
     s_mptEngaged.clear();
+    s_setJoinHas.clear();
     s_mpposLast.clear();
     s_setRanLast.clear();
 }
@@ -548,49 +550,17 @@ uint64_t KeyProxy(uint64_t iproxy, int j) { return (1ull << 63) | (iproxy << 12)
 bool FKeyPooled(uint64_t key) { return (key >> 63) != 0; }
 uint64_t IproxyFromKey(uint64_t key) { return (key & ~(1ull << 63)) >> 12; }
 
+// A guard's key: the object itself, its oid and its clone number (a world group's instances are clones made at the
+// load: the same objects in both games). Which proxy each game's pool placed it at differs (each game's own history),
+// so the other game's copy of the same object is posed as this one, wherever its own pool put it.
 void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
 {
-    std::unordered_map<const LO*, uint64_t> mpinst;
-    std::unordered_set<const LO*> setPooled;
-    for (const WE& we : psw->awe)
-    {
-        if (we.cloLoaded <= 0) continue;
-        for (const LO* plo : we.aplo) setPooled.insert(plo);
-        for (size_t irow = 0; irow < we.aploRowOwner.size(); ++irow)
-        {
-            const LO* pproxy = we.aploRowOwner[irow];
-            if (!pproxy) continue;
-            const int64_t iproxy = IploAll(psw, pproxy);
-            if (iproxy < 0) continue;
-            // (a proxy can hold more than one instance: which one, oldest first)
-            int isub = 0;
-            if (auto itp = psw->mpproxy.find(const_cast<LO*>(pproxy)); itp != psw->mpproxy.end())
-            {
-                const auto& a = itp->second.airow;
-                auto ir = std::find(a.begin(), a.end(), int(irow));
-                if (ir != a.end()) isub = int(a.end() - ir) - 1;
-            }
-            for (int j = 0; j < we.cloLoaded; ++j)
-            {
-                const size_t i = irow * size_t(we.cloLoaded) + size_t(j);
-                if (i < we.aplo.size() && we.aplo[i]) mpinst[we.aplo[i]] = KeyProxy(uint64_t(iproxy), (std::min(isub, 15) << 8) | (j & 0xFF));
-            }
-        }
-    }
-    std::unordered_map<int, uint32_t> mpc;
     for (const auto& up : psw->aploAll)
     {
         LO* plo = up.get();
         if (!plo || !FCidDerivedFrom(plo->Cid(), 0x38)) continue;
         if (plo->paloParent && FCidDerivedFrom(plo->paloParent->Cid(), 0x38)) continue;
-        if (auto it = mpinst.find(plo); it != mpinst.end())
-        {
-            a.emplace_back(it->second, static_cast<ALO*>(plo));
-            continue;
-        }
-        if (setPooled.count(plo)) continue;   // (a spare instance: no proxy, out of the world)
-        const uint32_t ord = mpc[plo->oid]++;
-        a.emplace_back((uint64_t(uint32_t(plo->oid)) << 32) | ord, static_cast<ALO*>(plo));
+        a.emplace_back((uint64_t(uint32_t(plo->oid)) << 32) | uint32_t(plo->iclone), static_cast<ALO*>(plo));
     }
 }
 
@@ -610,8 +580,9 @@ bool FMirrored(uint64_t key)
 {
     if (s_setDead.count(key)) return true;
     if (s_opt.mode == COOPMODE_Host) return s_mptOwnedJoin.count(key) != 0;
+    if (s_iwrecRoster != g_transition.iwrecCur) return false;
     auto it = s_mpRoster.find(key);
-    return s_iwrecRoster == g_transition.iwrecCur && it != s_mpRoster.end() && !it->second;
+    return it == s_mpRoster.end() || !it->second;
 }
 
 // a guard this game runs is after this game's player: its detector sees or suspects the player (or what the player
@@ -644,7 +615,7 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
     std::unordered_map<uint64_t, double> mpNew;
     for (const auto& [key, palo] : aroot)
     {
-        if (!fJoin || !palo->fInWorld || s_setDead.count(key)) continue;
+        if (!fJoin || !palo->fInWorld || s_setDead.count(key) || !s_setJoinHas.count(key)) continue;
         const float dH = glm::distance(PosRoot(palo), posHost), dJ = glm::distance(PosRoot(palo), posJoin);
         auto it = s_mptOwnedJoin.find(key);
         const bool fWas = it != s_mptOwnedJoin.end();
@@ -711,7 +682,6 @@ void SendActors(SW* psw)
     {
         ALO* pa = kr.second;
         if (!pa->fInWorld || pa->axf.empty() || FMirrored(kr.first)) continue;
-        if (!fHost && !(s_iwrecRoster == g_transition.iwrecCur && s_mpRoster.count(kr.first))) continue;   // (not the host's)
         const float d = fPos ? glm::distance(PosRoot(pa), posOther) : 0.0f;
         if (d > c_sActorRadius) continue;
         asel.push_back({d, kr});
@@ -735,7 +705,18 @@ void SendActors(SW* psw)
                 w.Put<uint8_t>(s_mptOwnedJoin.count(kr.first) ? 1 : 0);
             }
     }
-    else w.Put<uint16_t>(0);
+    else
+    {
+        uint16_t c = 0;
+        for (const auto& kr : aroot) c += kr.second->fInWorld ? 1 : 0;
+        w.Put<uint16_t>(c);
+        for (const auto& kr : aroot)
+            if (kr.second->fInWorld)
+            {
+                w.Put<uint64_t>(kr.first);
+                w.Put<uint8_t>(0);
+            }
+    }
     w.Put<uint16_t>(uint16_t(std::min<size_t>(s_setDead.size(), 2000)));
     size_t cDead = 0;
     for (uint64_t key : s_setDead)
@@ -875,6 +856,11 @@ void OnActors(READER& r)
     {
         s_mpRoster = std::move(mpRoster);
         s_iwrecRoster = snap.iwrec;
+    }
+    else
+    {
+        s_setJoinHas.clear();
+        for (const auto& kv : mpRoster) s_setJoinHas.insert(kv.first);
     }
     for (uint64_t key : aDead) s_setDead.insert(key);
     snap.tRecv = TNow();
@@ -1347,7 +1333,6 @@ void CoopStep(SW* psw)
         else FollowHost(psw);
         SendActors(psw);
     }
-    SyncProxies(psw);
     SendState(psw);
     StepRemote(psw);
     StepMirror(psw);
