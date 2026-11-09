@@ -48,7 +48,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 9;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 10;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -67,6 +67,7 @@ enum MSG : uint8_t
     MSG_Save = 5,       // reliable, host -> joiner: the host's saved state (progress, coins, items)
     MSG_Actors = 6,     // unreliable sequenced, host -> joiner: the guards' trees
     MSG_Hit = 7,        // reliable, either way: a hit on a guard the other game runs
+    MSG_TaskState = 9,  // reliable, either way: a step of the shared job started (1) or done (2) in the sender's game
     MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
 
@@ -312,6 +313,7 @@ bool s_fHelloOk = false;
 std::string s_nameRemote;
 std::string s_status = "";
 uint32_t s_stepLocal = 0;
+uint32_t s_stepWorldStart = 0;   // the step the running world started
 double s_tNextRetry = 0.0;
 
 double TNow()
@@ -807,13 +809,28 @@ void WatchJoinerTask()
     const OID oid = g_taskmgr.oidTask;
     if (oid == s_oidLast) return;
     s_oidLast = oid;
+    // (a step of the job both run is the task states' business: only a job the host is not on is asked for)
     if (oid < 0 || g_transition.fPending || oid == s_worldHost.oidTask) return;
+    if (g_taskmgr.oidJob >= 0 && g_taskmgr.oidJob == s_worldHost.oidJob) return;
     WRITER w;
     w.Put<uint8_t>(MSG_TaskReq);
     w.Put<int32_t>(g_transition.iwrecCur);
     w.Put<int32_t>(oid);
     Send(s_ppeer, w, c_chanReliable, true);
     std::printf("co-op: started task %d here: asking the host to start it\n", oid);
+}
+
+bool s_fApplyingTask = false;
+void OnTaskState(READER& r)
+{
+    const int iwrec = r.Get<int32_t>();
+    const OID oid = r.Get<int32_t>();
+    const int n = r.Get<int32_t>();
+    if (!r.fOk || !g_psw || g_transition.fPending || iwrec != g_transition.iwrecCur) return;
+    s_fApplyingTask = true;
+    const bool f = FCoopApplyTaskState(g_psw, oid, n);
+    s_fApplyingTask = false;
+    std::printf("co-op: %s's task %d -> %d: %s\n", s_nameRemote.c_str(), oid, n, f ? "applied" : "already / not here");
 }
 
 void OnTaskReq(READER& r)
@@ -832,7 +849,9 @@ void FollowHost(SW* psw)
     if (g_transition.fPending || s_stepLocal < s_stepNextFollow) return;
     if (s_cFollowTries >= 3) return;   // (it did not take: wait for the host's next world)
     const bool fWorld = g_transition.iwrecCur != s_worldHost.iwrec;
-    const bool fTask = !fWorld && s_worldHost.oidTask >= 0 && g_taskmgr.oidTask != s_worldHost.oidTask;
+    // (a new job only: the steps of the job both run follow by their task states, without a restart)
+    const bool fTask = !fWorld && s_worldHost.oidTask >= 0 && g_taskmgr.oidTask != s_worldHost.oidTask &&
+                       g_taskmgr.oidJob != s_worldHost.oidJob;
     if (!fWorld && !fTask) return;
     s_stepNextFollow = s_stepLocal + 300;   // (once every 5 s while it differs)
     ++s_cFollowTries;
@@ -1073,6 +1092,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_Actors: OnActors(r); break;
     case MSG_Hit: OnHit(r); break;
     case MSG_TaskReq: if (!fJoin) OnTaskReq(r); break;
+    case MSG_TaskState: OnTaskState(r); break;
     default: break;
     }
 }
@@ -1382,6 +1402,7 @@ void CoopStep(SW* psw)
 void CoopOnWorldStarted(SW*)
 {
     if (!FCoopActive()) return;
+    s_stepWorldStart = s_stepLocal;
     // (a world's start clears the bone table and frees the running world's objects: bind again on the next step)
     ResetRemote();
     ResetMirror();
@@ -1404,6 +1425,20 @@ bool FCoopActivationPos(glm::vec3& pos)
 {
     if (!FConnected() || g_transition.fPending) return false;
     return FPosRemote(pos);
+}
+
+void CoopOnTaskState(int oid, int nOld, int n)
+{
+    // (the started (1) and done (2) steps; a failure (3: caught) stays in its game, each player respawning alone;
+    // nothing while a world loads or restores its tasks)
+    if (!FConnected() || s_fApplyingTask || (n != 1 && n != 2) || nOld >= n) return;
+    if (g_transition.fPending || g_transition.wipes == WIPES_Out || s_stepLocal - s_stepWorldStart < 120) return;
+    WRITER w;
+    w.Put<uint8_t>(MSG_TaskState);
+    w.Put<int32_t>(g_transition.iwrecCur);
+    w.Put<int32_t>(oid);
+    w.Put<int32_t>(n);
+    Send(s_ppeer, w, c_chanReliable, true);
 }
 
 bool FCoopSkipUpdate(const LO* plo)

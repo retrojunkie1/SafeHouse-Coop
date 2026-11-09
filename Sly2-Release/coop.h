@@ -60,6 +60,9 @@ bool FCoopTakeSceneRebuild();
 // The joiner's guards: the host's are shown, so the joiner's own do not think (update.cpp skips them), and the hits
 // on them go to the host (guardphys.cpp: true when sent there, the hit then not taken here).
 bool FCoopSkipUpdate(const LO* plo);
+// (task.cpp) a task's state changing here (1: started, 2: done) is sent to the other game; the other's applied here
+void CoopOnTaskState(int oid, int nOld, int n);
+bool FCoopApplyTaskState(SW* psw, int oid, int n);
 // (activate.cpp) the other player's character's place in this world: its surroundings are activated too (guards and
 // their pooled instances placed there, objects updated), so both games have the guards around both players
 bool FCoopActivationPos(glm::vec3& pos);

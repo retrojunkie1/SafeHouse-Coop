@@ -1,3 +1,4 @@
+#include "coop.h"
 #include "po.h"
 #include "actor.h"
 #include "booty.h"
@@ -371,6 +372,7 @@ void ChangeTaskState(TASK* p, int n)
 {
     const int nOld = p->nState;
     if (n == nOld || g_taskmgr.fBusy) return;
+    CoopOnTaskState(p->oid, nOld, n);   // (coop.h: a step started or done here is told to the other game)
     g_taskmgr.fBusy = true;
     int nFilter = -1;
     switch (n)
@@ -1634,4 +1636,14 @@ std::vector<JOBINFO> AjobinfoOfLoadedWorld(SW* psw)
     psw->tasks = tasksSaved;
     s_psw = pswSaved;
     return ajob;
+}
+
+// (co-op, coop.h) the other game's step started / done, applied here (its own notification suppressed by coop.cpp)
+bool FCoopApplyTaskState(SW* psw, OID oid, int n)
+{
+    TASK* p = PtaskFind(oid);
+    if (!p || !psw || p->nState == n) return false;
+    s_psw = psw;
+    ChangeTaskState(p, n);
+    return p->nState == n;
 }
