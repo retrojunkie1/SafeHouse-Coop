@@ -16,6 +16,7 @@
 // Both players need the same disc region (USA, Europe or Japan): the handshake refuses a mismatch.
 
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <string>
 #include <vector>
 
@@ -59,6 +60,9 @@ bool FCoopTakeSceneRebuild();
 // The joiner's guards: the host's are shown, so the joiner's own do not think (update.cpp skips them), and the hits
 // on them go to the host (guardphys.cpp: true when sent there, the hit then not taken here).
 bool FCoopSkipUpdate(const LO* plo);
+// (activate.cpp) the other player's character's place in this world: its surroundings are activated too (guards and
+// their pooled instances placed there, objects updated), so both games have the guards around both players
+bool FCoopActivationPos(glm::vec3& pos);
 // (game.cpp) after the step's world matrices are rebuilt from the local ones: the mirrored guards' poses written again
 void CoopAfterWorlds();
 bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm);

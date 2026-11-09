@@ -1,3 +1,4 @@
+#include "coop.h"
 #include "pickup.h"
 #include "actor.h"
 #include "damage.h"
@@ -168,6 +169,8 @@ void CheckLoRoot(SW* psw, LO* plo)
     const glm::vec3 posA = g_actview.posCm;
     const uint32_t grf = g_actview.grfCm;
     const glm::vec3 posB = PosPlayer(posA);
+    glm::vec3 posR;
+    const bool fR = FCoopActivationPos(posR);   // (co-op: the other player's character activates its surroundings too)
     bool fIn = false;
     switch (plo->st)
     {
@@ -179,6 +182,11 @@ void CheckLoRoot(SW* psw, LO* plo)
         {
             const glm::vec3 d = PosLoWorld(plo) - (plo->st == 0 ? posA : posB);
             fIn = glm::dot(d, d) < plo->sRadius * plo->sRadius;
+            if (!fIn && fR)
+            {
+                const glm::vec3 dR = PosLoWorld(plo) - posR;
+                fIn = glm::dot(dR, dR) < plo->sRadius * plo->sRadius;
+            }
         }
         break;
     default: break;
@@ -447,6 +455,10 @@ void UpdateSwActivation(SW* psw)
         psw->posCmLast = pos;
         psw->posPoLast = posB;
     }
+    // (co-op: the other player's character activates its surroundings too; every root is checked each step then)
+    glm::vec3 posR;
+    const bool fR = FCoopActivationPos(posR);
+    if (fR) psw->ploStop = nullptr;
     auto moveToEnd = [&](LO* plo) {
         // orig 0x147EE8
         psw->lsplo20.erase(plo->itQueued);
@@ -476,7 +488,8 @@ void UpdateSwActivation(SW* psw)
             {
                 const float d = glm::distance(PosLoWorld(plo), plo->st == 0 ? pos : posB) - plo->sRadius;
                 fIn = d < 0.0f;
-                if (S_STOP < std::fabs(d) - (plo->st == 0 ? gA : gB)) moveToEnd(plo);
+                if (fR) fIn = fIn || glm::distance(PosLoWorld(plo), posR) < plo->sRadius;
+                else if (S_STOP < std::fabs(d) - (plo->st == 0 ? gA : gB)) moveToEnd(plo);
             }
             break;
         default: break;

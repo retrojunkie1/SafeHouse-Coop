@@ -1277,6 +1277,12 @@ void CoopAfterWorlds()
     }
 }
 
+bool FCoopActivationPos(glm::vec3& pos)
+{
+    if (!FConnected() || g_transition.fPending) return false;
+    return FPosRemote(pos);
+}
+
 bool FCoopSkipUpdate(const LO* plo)
 {
     return s_mirror.fActive && plo && s_mirror.setFrozen.count(plo) != 0;
