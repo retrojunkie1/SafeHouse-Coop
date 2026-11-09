@@ -2,6 +2,7 @@
 
 #include "coop.h"
 
+#include "activate.h"
 #include "alo.h"
 #include "bone.h"
 #include "cls.h"
@@ -35,7 +36,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 1;
+constexpr uint16_t c_protocol = 2;   // 2: per-object drawn flag, fade and shown mesh groups
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1;
 constexpr size_t c_cpeerMax = 1;                // milestone 1: one other player
 constexpr int c_cxfMax = 512;                   // records per pose (Sly's tree has well under 200)
@@ -89,6 +90,9 @@ struct XFPOSE
 struct ALOPOSE
 {
     int oid = -1;
+    bool fDrawn = false;        // the sender's game draws it this step (FAloDrawn: effects, gadgets and props are hidden)
+    float gFade = 1.0f;
+    std::vector<std::pair<int32_t, bool>> aglobShown;   // its mesh groups shown / hidden at run time (alo.h)
     std::vector<XFPOSE> axf;
 };
 
@@ -165,6 +169,7 @@ struct REMOTE
     std::vector<ALO*> apaloTree;       // its tree (CollectTree order)
     std::vector<ALO*> apaloDraw;       // the ones with meshes
     std::unordered_map<int, ALO*> mpoid;
+    std::unordered_map<const ALO*, bool> mpfDrawn;   // per object: drawn in the pose shown (absent: not sent, hidden)
     bool fShown = false;
 } s_remote;
 bool s_fSceneRebuild = false;
@@ -256,6 +261,14 @@ void OnState(READER& r)
     {
         ALOPOSE ap;
         ap.oid = r.Get<int32_t>();
+        ap.fDrawn = (r.Get<uint8_t>() & 1) != 0;
+        ap.gFade = r.Get<float>();
+        const uint8_t cglob = r.Get<uint8_t>();
+        for (int g = 0; g < cglob && r.fOk; ++g)
+        {
+            const int32_t n = r.Get<int32_t>();
+            ap.aglobShown.emplace_back(n, r.Get<uint8_t>() != 0);
+        }
         const uint16_t c = r.Get<uint16_t>();
         cxf += c;
         if (cxf > c_cxfMax) return;
@@ -373,6 +386,15 @@ void SendState(SW* psw)
         const int c = std::min<int>(int(pa->axf.size()), c_cxfMax - cxf);
         cxf += c;
         w.Put<int32_t>(pa->oid);
+        w.Put<uint8_t>(FAloDrawn(psw, pa) ? 1 : 0);
+        w.Put<float>(pa->gFade);
+        const size_t cglob = std::min<size_t>(pa->aglobShown.size(), 255);
+        w.Put<uint8_t>(uint8_t(cglob));
+        for (size_t g = 0; g < cglob; ++g)
+        {
+            w.Put<int32_t>(pa->aglobShown[g].first);
+            w.Put<uint8_t>(pa->aglobShown[g].second ? 1 : 0);
+        }
         w.Put<uint16_t>(uint16_t(c));
         for (int i = 0; i < c; ++i)
         {
@@ -416,6 +438,7 @@ bool FBindRemote(SW* psw, int iwrec, int oid)
 
 void ApplyPose(const POSE& a, const POSE* pb, float u)
 {
+    s_remote.mpfDrawn.clear();
     for (size_t i = 0; i < a.aalo.size(); ++i)
     {
         const ALOPOSE& apa = a.aalo[i];
@@ -429,7 +452,11 @@ void ApplyPose(const POSE& a, const POSE* pb, float u)
             const XFPOSE x = (apb && k < apb->axf.size()) ? Lerp(apa.axf[k], apb->axf[k], u) : apa.axf[k];
             palo->axf[k]->matWorld = MatFromXfpose(x);
         }
-        palo->gFade = pb ? glm::mix(a.gFade, pb->gFade, u) : a.gFade;
+        // drawn, fade and mesh groups: the nearer pose's (they switch, not blend), the fade blended
+        const ALOPOSE& apn = (apb && u >= 0.5f) ? *apb : apa;
+        s_remote.mpfDrawn[palo] = apn.fDrawn;
+        palo->gFade = apb ? glm::mix(apa.gFade, apb->gFade, u) : apa.gFade;
+        palo->aglobShown = apn.aglobShown;
     }
 }
 
@@ -597,7 +624,9 @@ int NCoopDrawOverride(const ALO* palo)
 {
     if (s_remote.apaloDraw.empty()) return -1;
     if (std::find(s_remote.apaloDraw.begin(), s_remote.apaloDraw.end(), palo) == s_remote.apaloDraw.end()) return -1;
-    return s_remote.fShown ? 1 : 0;
+    if (!s_remote.fShown) return 0;
+    const auto it = s_remote.mpfDrawn.find(palo);
+    return it != s_remote.mpfDrawn.end() && it->second ? 1 : 0;
 }
 
 bool FCoopTakeSceneRebuild()

@@ -2,6 +2,7 @@
 // the camera keys, the device tracker) and mouseinput.cpp (capture, motion, bindings, menu buttons).
 
 #include "pcinput.h"
+#include "coop.h"
 #include "actioninput.h"
 #include "rumble.h"
 
@@ -538,7 +539,8 @@ void ReadPcInput(GLFWwindow* window, uint16_t* pgrf, float* pxl, float* pyl, flo
     GLFWgamepadstate gp{};
 
     // the gamepad: the most active mapped pad (Steam can park an idle virtual pad below the one in use)
-    if (!g_pcinput.fDisableUnfocusedPad || fFocused)
+    // (co-op: only the focused window reads the pad, so two games on one PC each take their own turn)
+    if ((!g_pcinput.fDisableUnfocusedPad && !FCoopActive()) || fFocused)
     {
         s_jidPad = cane::input::selectActivePad(s_jidPad, &gp);
         cane::input::tracker().pollGamepads();
