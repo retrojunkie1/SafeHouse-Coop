@@ -4,6 +4,8 @@
 // objects, +0x2D0 the classes: EOPID 418 = 0x149248) and the toucher +0x2F8 (EOPID 427). Entering state 1 runs its
 // splice event 5: the intro's bounce pads (8448, 150508) launch the toucher with the actors' method 730 (0x10A790 ->
 // 0x141968) toward their s1088 after 0.05 s. And the actors' launch itself (jump kind 8).
+#include "coop.h"
+#include "sw.h"
 #include "actor.h"
 #include "worldglobals.h"
 #include "alo.h"
@@ -146,6 +148,7 @@ void SetPadState(LO* plo, PAD& p, int n)
     const int old = p.state;
     if (old == n) return;
     const bool f1 = old == 0 && n == 1, f0 = old != -1 && n == 0;
+    if (f1 || f0) CoopOnPadState(plo->oid, plo->iclone, n);   // (coop.h: a bell / switch / plate here, in the other game too)
     p.state = n;
     p.tState = g_clock.t;
     if (std::getenv("SLY2N_PADDEBUG"))
@@ -378,3 +381,19 @@ struct INITPAD
 // inherit its record)
 void ResetPads() { MpPad().clear(); }
 NATIVEFN(0x148F20, FAcceptPadContact);
+
+// (co-op, coop.h) the other game's switch / bell / plate set here (its enter / leave actions, scripts and all)
+bool FCoopApplyPadState(SW* psw, int oid, int iclone, int n)
+{
+    if (!psw) return false;
+    for (const auto& up : psw->aploAll)
+    {
+        LO* plo = up.get();
+        if (!plo || plo->oid != oid || plo->iclone != iclone || !MpPad().count(plo)) continue;
+        PAD& p = Pad(plo);
+        if (p.state == n || (n == 1 && p.state != 0)) return false;
+        SetPadState(plo, p, n);
+        return true;
+    }
+    return false;
+}

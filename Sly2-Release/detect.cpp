@@ -1,6 +1,7 @@
 // The guards' detectors. See detect.h. Reference: Sly2-Reference/Sly2-Release/game/m_14F030_p3.cpp (0x153DE0, 0x153EF8),
 // m_153FF8_p3.cpp (0x154080, 0x154180, 0x1541D8), m_227BB8.cpp (0x227C90) and the original's code for 0x153E60.
 
+#include "coop.h"
 #include "detect.h"
 #include "worldglobals.h"
 #include "worldaccess.h"
@@ -371,7 +372,12 @@ void SetDetentryState(DETECTOR* pdet, DETENTRY* pe, int n)
 void UpdateDetector(DETECTOR* pdet)
 {
     for (size_t i = 0; i < pdet->ae.size(); ++i)
-        SetDetentryState(pdet, &pdet->ae[i], NDetectState(pdet, pdet->ae[i].plo, pdet->ae[i].st));
+    {
+        int n = NDetectState(pdet, pdet->ae[i].plo, pdet->ae[i].st);
+        // (co-op, coop.h: the host's mission characters seeing the other player see this game's: the job fails)
+        if (n == 0 && FCoopMissionSeesRemote(pdet, pdet->ae[i].plo)) n = 1;
+        SetDetentryState(pdet, &pdet->ae[i], n);
+    }
 }
 
 // (public: the actors' target ranks 0x208E70)

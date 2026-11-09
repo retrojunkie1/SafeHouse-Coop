@@ -30,6 +30,7 @@ void ResumeGame(int grf);  // ai.cpp: orig 0x20F030
 #include <cstring>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 
 TASKMGR g_taskmgr;
 
@@ -1646,4 +1647,21 @@ bool FCoopApplyTaskState(SW* psw, OID oid, int n)
     s_psw = psw;
     ChangeTaskState(p, n);
     return p->nState == n;
+}
+
+// (co-op, coop.h) the objects the current job's steps place or use (TASKOBJE): its characters (Dimitri), run only by
+// the host's game, where the job's scripts run
+void CoopCollectJobObjects(SW* psw, std::unordered_set<int>& setoid)
+{
+    if (!psw) return;
+    JOB* pjob = psw->tasks.pjobCur;
+    for (LO* plo : psw->mpcidaplo[0x85])
+    {
+        TASK* p = PtaskFromLo(plo);
+        if (!p) continue;
+        if (!(pjob && p->pjob == pjob) && p->nState != 1) continue;
+        for (const TASKOBJE& o : p->aobje) setoid.insert(o.oidA);
+    }
+    if (pjob)
+        for (const TASKOBJE& o : pjob->aobje) setoid.insert(o.oidA);
 }

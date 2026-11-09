@@ -50,7 +50,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 11;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 12;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -70,6 +70,7 @@ enum MSG : uint8_t
     MSG_Actors = 6,     // unreliable sequenced, host -> joiner: the guards' trees
     MSG_Hit = 7,        // reliable, either way: a hit on a guard the other game runs
     MSG_TaskState = 9,  // reliable, either way: a step of the shared job started (1) or done (2) in the sender's game
+    MSG_Pad = 10,       // reliable, either way: a switch / bell / plate turned on or off in the sender's game
     MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
 
@@ -611,6 +612,20 @@ bool FGuardEngaged(SW* psw, ALO* palo)
     return false;
 }
 
+// the current job's characters (the host's game runs them: the job's scripts run there), refreshed twice a second
+const std::unordered_set<int>& SetJobObjects(SW* psw)
+{
+    static std::unordered_set<int> s_set;
+    static uint32_t s_step = 0xFFFFFFFF;
+    if (s_step != s_stepLocal / 30)
+    {
+        s_step = s_stepLocal / 30;
+        s_set.clear();
+        CoopCollectJobObjects(psw, s_set);
+    }
+    return s_set;
+}
+
 // a guard this game runs would see the other game's player (its detector watches players: it has an entry for this
 // game's)
 bool FGuardSeesRemote(SW* psw, ALO* palo)
@@ -645,6 +660,7 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
     for (const auto& [key, palo] : aroot)
     {
         if (!fJoin || !palo->fInWorld || s_setDead.count(key) || !s_setJoinHas.count(key)) continue;
+        if (SetJobObjects(psw).count(palo->oid)) continue;   // (a mission character: always the host's)
         const float dH = glm::distance(PosRoot(palo), posHost), dJ = glm::distance(PosRoot(palo), posJoin);
         auto it = s_mptOwnedJoin.find(key);
         const bool fWas = it != s_mptOwnedJoin.end();
@@ -855,6 +871,7 @@ void WatchJoinerTask()
 }
 
 bool s_fApplyingTask = false;
+bool s_fApplyingPad = false;
 void OnTaskState(READER& r)
 {
     const int iwrec = r.Get<int32_t>();
@@ -865,6 +882,17 @@ void OnTaskState(READER& r)
     const bool f = FCoopApplyTaskState(g_psw, oid, n);
     s_fApplyingTask = false;
     std::printf("co-op: %s's task %d -> %d: %s\n", s_nameRemote.c_str(), oid, n, f ? "applied" : "already / not here");
+}
+
+void OnPad(READER& r)
+{
+    const int iwrec = r.Get<int32_t>();
+    const int oid = r.Get<int32_t>(), iclone = r.Get<int32_t>(), n = r.Get<int32_t>();
+    if (!r.fOk || !g_psw || g_transition.fPending || iwrec != g_transition.iwrecCur) return;
+    s_fApplyingPad = true;
+    const bool f = FCoopApplyPadState(g_psw, oid, iclone, n);
+    s_fApplyingPad = false;
+    std::printf("co-op: %s's switch %d -> %d: %s\n", s_nameRemote.c_str(), oid, n, f ? "set here" : "already");
 }
 
 void OnTaskReq(READER& r)
@@ -1131,6 +1159,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_Hit: OnHit(r); break;
     case MSG_TaskReq: if (!fJoin) OnTaskReq(r); break;
     case MSG_TaskState: OnTaskState(r); break;
+    case MSG_Pad: OnPad(r); break;
     default: break;
     }
 }
@@ -1479,7 +1508,9 @@ void CoopOnTaskState(int oid, int nOld, int n)
 {
     // (the started (1) and done (2) steps; a failure (3: caught) stays in its game, each player respawning alone;
     // nothing while a world loads or restores its tasks)
-    if (!FConnected() || s_fApplyingTask || (n != 1 && n != 2) || nOld >= n) return;
+    // (a failure (3) goes from the host to the joiner: the job is the host's; the joiner's own stays its own)
+    const bool fFail = n == 3 && s_opt.mode == COOPMODE_Host;
+    if (!FConnected() || s_fApplyingTask || ((n != 1 && n != 2) && !fFail) || (nOld >= n && !fFail)) return;
     if (g_transition.fPending || g_transition.wipes == WIPES_Out || s_stepLocal - s_stepWorldStart < 120) return;
     WRITER w;
     w.Put<uint8_t>(MSG_TaskState);
@@ -1487,6 +1518,35 @@ void CoopOnTaskState(int oid, int nOld, int n)
     w.Put<int32_t>(oid);
     w.Put<int32_t>(n);
     Send(s_ppeer, w, c_chanReliable, true);
+}
+
+void CoopOnPadState(int oid, int iclone, int n)
+{
+    if (!FConnected() || s_fApplyingPad || g_transition.fPending || s_stepLocal - s_stepWorldStart < 120) return;
+    WRITER w;
+    w.Put<uint8_t>(MSG_Pad);
+    w.Put<int32_t>(g_transition.iwrecCur);
+    w.Put<int32_t>(oid), w.Put<int32_t>(iclone), w.Put<int32_t>(n);
+    Send(s_ppeer, w, c_chanReliable, true);
+}
+
+bool FCoopMissionSeesRemote(DETECTOR* pdet, LO* pso)
+{
+    if (s_opt.mode != COOPMODE_Host || !FConnected() || !g_psw || !pdet || !pdet->ploOwner || !pso) return false;
+    if (pso != PloPoCurrent(g_psw) || s_aposeRemote.empty()) return false;
+    const POSE& p = s_aposeRemote.back();
+    if (p.iwrec != g_transition.iwrecCur || p.oidPlayer < 0 || p.fUnseen || TNow() - p.tRecv > 0.5) return false;
+    const LO* proot = pdet->ploOwner;
+    while (proot->paloParent) proot = proot->paloParent;
+    if (!SetJobObjects(g_psw).count(proot->oid) && !SetJobObjects(g_psw).count(pdet->ploOwner->oid)) return false;
+    const bool f = FCoopDetectorSeesPoint(pdet, p.posAi, p.posDet);
+    static double s_tLog = 0.0;
+    if (f && TNow() - s_tLog > 2.0)
+    {
+        s_tLog = TNow();
+        std::printf("co-op: mission character %d sees %s\n", pdet->ploOwner->oid, s_nameRemote.c_str());
+    }
+    return f;
 }
 
 bool FCoopSkipUpdate(const LO* plo)
