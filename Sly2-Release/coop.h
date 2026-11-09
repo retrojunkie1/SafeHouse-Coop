@@ -21,6 +21,8 @@
 
 struct SW;
 struct ALO;
+struct LO;
+struct CTMSG;
 
 enum COOPMODE
 {
@@ -52,6 +54,13 @@ void CoopOnWorldStarted(SW* psw);
 void CoopAppendSceneAlos(std::vector<ALO*>& apalo);
 int NCoopDrawOverride(const ALO* palo);   // -1: not a co-op object; 0: hidden; 1: drawn
 bool FCoopTakeSceneRebuild();
+
+// The joiner's guards: the host's are shown, so the joiner's own do not think (update.cpp skips them), and the hits
+// on them go to the host (guardphys.cpp: true when sent there, the hit then not taken here).
+bool FCoopSkipUpdate(const LO* plo);
+bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm);
+// (guardphys.cpp) the guards' contact handler, for the hits the joiner sends the host
+bool FCoopGuardAcceptContact(ALO* palo, CTMSG* pctm);
 
 // A line for the screen's corner ("co-op: waiting for a player on port 27015", "co-op: Ana connected, 48 ms").
 std::string SzCoopStatus();

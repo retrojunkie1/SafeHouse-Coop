@@ -1,3 +1,4 @@
+#include "coop.h"
 #include <cstring>
 #include "worldglobals.h"
 #include "update.h"
@@ -844,6 +845,7 @@ void UpdateSw(SW* psw)
         {
             const UPDENT& e = psw->aupd[psw->iupdCur];
             if ((e.grf & (GRFUPD_Update | GRFUPD_RealTime)) != (GRFUPD_Update | GRFUPD_RealTime) || !e.plo) continue;
+            if (FCoopSkipUpdate(e.plo)) continue;
             if (PFNUPDATE pfn = PfnUpdateForClass(e.plo->pcls)) pfn(e.plo);
         }
         psw->iupdCur = -1;
@@ -869,6 +871,7 @@ void UpdateSw(SW* psw)
             const UPDENT& e = psw->aupd[psw->iupdCur];
             if (!(e.grf & GRFUPD_Update) || !e.plo) continue;
             if (FDebugSkipUpdate(psw, e.plo)) continue;   // (debugmenu.h: the noclip's player, placed by the menu)
+            if (FCoopSkipUpdate(e.plo)) continue;         // (coop.h: the joiner's guards show the host's)
             if (PFNUPDATE pfn = PfnUpdateForClass(e.plo->pcls)) pfn(e.plo);  // vt slot 16
             else if (std::getenv("SLY2N_UPDMISS"))
             {

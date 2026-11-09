@@ -3,6 +3,7 @@
 // accepted: the jobs get message12) with86 0x207530 /76 0x207598. Slot59 0x209C88
 // adds the rail contacts for attached movement mode 0, the ladder's (mode 1) and the bar's (mode 2); mode 3 remains unported.
 
+#include "coop.h"
 #include "guard.h"
 #include "aihit.h"
 
@@ -116,6 +117,7 @@ bool FGuardBusy(GUARD* pg) { return pg->f32C != 0 || pg->f298 != 0 || FGuardStat
 // orig: 0x00207468 (vt slot 75: a contact accepted; the ones that matter are offered to the jobs as message 12)
 bool FAcceptContactGuard(ALO* palo, CTMSG* pctm)
 {
+    if (FCoopForwardGuardHit(palo, pctm)) return true;   // (coop.h: the joiner's hit goes to the host's guard)
     GUARD* pg = PguardFromLo(palo);
     if (!pg) return pctm->grfAccepted != 0;
     static const bool s_fDebug = std::getenv("SLY2N_HITDEBUG") != nullptr;
@@ -138,6 +140,8 @@ bool FAcceptContactGuard(ALO* palo, CTMSG* pctm)
     return false;
 }
 }  // namespace
+
+bool FCoopGuardAcceptContact(ALO* palo, CTMSG* pctm) { return FAcceptContactGuard(palo, pctm); }
 
 // orig: 0x00209EE0
 void ReleaseGuardHeld(LO* plo)

@@ -14,9 +14,9 @@ matching: both players must have the same region and the same SafeHouse-Coop bui
 
 | | What | Status |
 |---|---|---|
-| **M1** | **See each other.** Two games connect (ENet over UDP). Each sends its player's pose every step; the other is drawn in your world as a puppet (the same character's model from a kept copy of the world, `pcloader.h`), interpolated 3 steps behind. Each game still runs its own world. Only what the other game draws is drawn (effects and gadgets hidden); only the focused window reads the controller. | in progress |
-| M2 | **Same world.** The joiner follows the host's world changes (warps, level loads, safe house). The host is the authority on world and job. | |
-| M3 | **Shared guards.** The host runs the AI; the joiner's guards become puppets of the host's (pose + state). Guards see, chase and fight both players (the host simulates the joiner's character as a second target). Hits and pickpockets by the joiner are sent to the host. | |
+| **M1** | **See each other.** Two games connect (ENet over UDP). Each sends its player's pose every step; the other is drawn in your world as a puppet (the same character's model from a kept copy of the world, `pcloader.h`), interpolated 3 steps behind. Each game still runs its own world. Only what the other game draws is drawn (effects and gadgets hidden); only the focused window reads the controller. | done |
+| M2 | **Same world.** The joiner follows the host's world changes (warps, level loads, safe house) and job / task, and takes the host's save (progress, coins, items; its own health kept). | testing |
+| M3 | **Shared guards.** The host runs the AI; the joiner's guards become puppets of the host's (pose + state). Guards see, chase and fight both players (the host simulates the joiner's character as a second target). Hits and pickpockets by the joiner are sent to the host. | part: the joiner's guards copy the host's (pose, visibility; 30 a second, the 24 nearest the joiner) and don't think; the joiner's hits go to the host's guard. Guards don't see the joiner yet. |
 | M4 | **Shared progress.** Loot, coins, keys, clue bottles, job steps and saves owned by the host and mirrored to the joiner. | |
 | M5 | **Playing it.** Invite codes and a relay for players behind home routers, an in-game menu (host / join / leave), drop-in, reconnect, a launcher button. | |
 
