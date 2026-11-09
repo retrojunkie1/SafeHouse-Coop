@@ -48,7 +48,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 8;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 9;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -66,7 +66,8 @@ enum MSG : uint8_t
     MSG_World = 4,      // reliable, host -> joiner: the host's world (its record, point, key, flags, job and task)
     MSG_Save = 5,       // reliable, host -> joiner: the host's saved state (progress, coins, items)
     MSG_Actors = 6,     // unreliable sequenced, host -> joiner: the guards' trees
-    MSG_Hit = 7,        // reliable, joiner -> host: a hit on a guard
+    MSG_Hit = 7,        // reliable, either way: a hit on a guard the other game runs
+    MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
 
 struct WRITER
@@ -798,6 +799,32 @@ void OnSave(READER& r)
     if (fKeep) *pn = nHp;
 }
 
+// joiner: a job / task started here (a job's marker, a mission's trigger) is asked of the host, which owns the jobs;
+// the host's start comes back in its world message and the joiner keeps it
+void WatchJoinerTask()
+{
+    static OID s_oidLast = -1;
+    const OID oid = g_taskmgr.oidTask;
+    if (oid == s_oidLast) return;
+    s_oidLast = oid;
+    if (oid < 0 || g_transition.fPending || oid == s_worldHost.oidTask) return;
+    WRITER w;
+    w.Put<uint8_t>(MSG_TaskReq);
+    w.Put<int32_t>(g_transition.iwrecCur);
+    w.Put<int32_t>(oid);
+    Send(s_ppeer, w, c_chanReliable, true);
+    std::printf("co-op: started task %d here: asking the host to start it\n", oid);
+}
+
+void OnTaskReq(READER& r)
+{
+    const int iwrec = r.Get<int32_t>();
+    const OID oid = r.Get<int32_t>();
+    if (!r.fOk || !g_psw || g_transition.fPending || iwrec != g_transition.iwrecCur || oid == g_taskmgr.oidTask) return;
+    std::printf("co-op: %s started task %d: starting it here\n", s_nameRemote.c_str(), oid);
+    RequestTaskStartByOid(g_psw, g_transition.fHaveCur ? g_transition.abChkCur : g_transition.req.abChk, oid);
+}
+
 // each step: the joiner's world made the host's (its record and job)
 void FollowHost(SW* psw)
 {
@@ -1045,6 +1072,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_Save: if (fJoin) OnSave(r); break;
     case MSG_Actors: OnActors(r); break;
     case MSG_Hit: OnHit(r); break;
+    case MSG_TaskReq: if (!fJoin) OnTaskReq(r); break;
     default: break;
     }
 }
@@ -1330,7 +1358,11 @@ void CoopStep(SW* psw)
             SendWorld(false);
             if (s_stepLocal % 30 == 0) SendSave(false);
         }
-        else FollowHost(psw);
+        else
+        {
+            FollowHost(psw);
+            WatchJoinerTask();
+        }
         SendActors(psw);
     }
     SendState(psw);
