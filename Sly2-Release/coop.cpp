@@ -12,6 +12,8 @@
 #include "damage.h"
 #include "gl.h"
 #include "glob.h"
+#include "aihit.h"
+#include "guard.h"
 #include "disc.h"
 #include "lo.h"
 #include "pcloader.h"
@@ -455,14 +457,41 @@ void SendWorld(bool fForce)
 
 // The world's guards and NPCs (class 0x38 and its classes) whose parent is not one, each with its key: its oid and
 // its ordinal among those roots with the same oid (proxied copies share an oid), in aploAll order.
+// A pooled guard (an instance of a world group, handed to the streaming proxy nearest a player) is keyed by its
+// proxy and its place in the group: the two games attach different instances to a proxy (the players stand in
+// different places), so the instance's own oid names different guards on the two sides.
 void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
 {
+    std::unordered_map<const LO*, uint64_t> mpinst;
+    std::unordered_set<const LO*> setPooled;
+    for (const WE& we : psw->awe)
+    {
+        if (we.cloLoaded <= 0) continue;
+        for (const LO* plo : we.aplo) setPooled.insert(plo);
+        for (size_t irow = 0; irow < we.aploRowOwner.size(); ++irow)
+        {
+            const LO* pproxy = we.aploRowOwner[irow];
+            if (!pproxy) continue;
+            for (int j = 0; j < we.cloLoaded; ++j)
+            {
+                const size_t i = irow * size_t(we.cloLoaded) + size_t(j);
+                if (i < we.aplo.size() && we.aplo[i])
+                    mpinst[we.aplo[i]] = (1ull << 63) | (uint64_t(uint32_t(pproxy->oid)) << 20) | uint64_t(j & 0xFFFFF);
+            }
+        }
+    }
     std::unordered_map<int, uint32_t> mpc;
     for (const auto& up : psw->aploAll)
     {
         LO* plo = up.get();
         if (!plo || !FCidDerivedFrom(plo->Cid(), 0x38)) continue;
         if (plo->paloParent && FCidDerivedFrom(plo->paloParent->Cid(), 0x38)) continue;
+        if (auto it = mpinst.find(plo); it != mpinst.end())
+        {
+            a.emplace_back(it->second, static_cast<ALO*>(plo));
+            continue;
+        }
+        if (setPooled.count(plo)) continue;   // (a spare instance: no proxy, out of the world)
         const uint32_t ord = mpc[plo->oid]++;
         a.emplace_back((uint64_t(uint32_t(plo->oid)) << 32) | ord, static_cast<ALO*>(plo));
     }
@@ -1013,7 +1042,14 @@ void CoopOnWorldStarted(SW*)
 void CoopAfterWorlds()
 {
     if (!s_mirror.fActive) return;
-    for (const auto& [pxf, m] : s_mirror.amat) pxf->matWorld = m;
+    for (const auto& [pxf, m] : s_mirror.amat)
+    {
+        pxf->matWorld = m;
+        // a guard's root record placed in the world (not relative to another): its local is the world, so its body
+        // (collision, activation) stands where the host's is, not where it froze
+        if (pxf->palo && !pxf->palo->paloParent && !pxf->pxfRef && !pxf->palo->axf.empty() && pxf->palo->axf[0].get() == pxf)
+            pxf->mat = m;
+    }
 }
 
 bool FCoopSkipUpdate(const LO* plo)
@@ -1028,6 +1064,18 @@ bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm)
     while (proot->paloParent && FCidDerivedFrom(proot->paloParent->Cid(), 0x38)) proot = proot->paloParent;
     auto it = s_mirror.mpRootKey.find(proot);
     if (it == s_mirror.mpRootKey.end()) return false;
+    // a frozen guard takes nothing here; only the joiner's own attacks (its character's tree, or what it threw)
+    // that would knock a guard about go to the host, at most 4 a second per guard (bumping into one is not a hit)
+    const LO* ploPlayer = g_psw ? PloPoCurrent(g_psw) : nullptr;
+    const LO* ploSender = pctm->ploSender;
+    while (ploSender && ploSender->paloParent) ploSender = ploSender->paloParent;
+    GUARD* pg = PguardFromLo(palo);
+    const bool fMatters = pg && (FGuardHitMatters(pg, pctm) || pctm->grfAccepted != 0);
+    if (!ploPlayer || ploSender != ploPlayer || !fMatters) return true;
+    static std::unordered_map<uint64_t, double> s_mptLast;
+    double& tLast = s_mptLast[it->second];
+    if (TNow() - tLast < 0.25) return true;
+    tLast = TNow();
     WRITER w;
     w.Put<uint8_t>(MSG_Hit);
     w.Put<uint64_t>(it->second);
