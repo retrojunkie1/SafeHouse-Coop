@@ -48,7 +48,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 5;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 6;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -333,6 +333,7 @@ struct POSE
     uint32_t step = 0;
     int iwrec = -1;
     int oidPlayer = -1;
+    glm::vec3 posPlayer{0.0f};   // the character's place (PosLoWorld)
     TREEPOSE tree;
     double tRecv = 0.0;
 };
@@ -543,8 +544,11 @@ void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
             for (int j = 0; j < we.cloLoaded; ++j)
             {
                 const size_t i = irow * size_t(we.cloLoaded) + size_t(j);
+                // (the proxy's place in the world: proxies share oids, their places are their own; 16 units a step)
+                const glm::vec3 p = irow < we.amatRow.size() ? glm::vec3(we.amatRow[irow][3]) : glm::vec3(0.0f);
+                auto q = [](float g) { return uint64_t(int64_t(std::lround(g / 16.0f)) & 0x3FFFF); };
                 if (i < we.aplo.size() && we.aplo[i])
-                    mpinst[we.aplo[i]] = (1ull << 63) | (uint64_t(uint32_t(pproxy->oid)) << 20) | uint64_t(j & 0xFFFFF);
+                    mpinst[we.aplo[i]] = (1ull << 63) | (q(p.x) << 45) | (q(p.y) << 27) | (q(p.z) << 9) | uint64_t(j & 0x1FF);
             }
         }
     }
@@ -572,8 +576,8 @@ bool FPosRemote(glm::vec3& pos)
 {
     if (s_aposeRemote.empty()) return false;
     const POSE& p = s_aposeRemote.back();
-    if (p.iwrec != g_transition.iwrecCur || p.tree.empty() || p.tree[0].axf.empty()) return false;
-    pos = p.tree[0].axf[0].pos;
+    if (p.iwrec != g_transition.iwrecCur || p.oidPlayer < 0) return false;
+    pos = p.posPlayer;
     return true;
 }
 
@@ -610,7 +614,7 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
     glm::vec3 posJoin;
     LO* ploHost = PloPoCurrent(psw);
     const bool fJoin = FPosRemote(posJoin) && ploHost && FCidDerivedFrom(ploHost->Cid(), 0x30);
-    const glm::vec3 posHost = fJoin ? PosRoot(static_cast<ALO*>(ploHost)) : glm::vec3(0.0f);
+    const glm::vec3 posHost = fJoin ? PosLoWorld(ploHost) : glm::vec3(0.0f);
     const double t = TNow();
     std::unordered_map<uint64_t, double> mpNew;
     for (const auto& [key, palo] : aroot)
@@ -645,7 +649,7 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
 void FindDead(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot, std::vector<uint64_t>* paDeadNew)
 {
     LO* plo = PloPoCurrent(psw);
-    const glm::vec3 posMe = plo && FCidDerivedFrom(plo->Cid(), 0x30) ? PosRoot(static_cast<ALO*>(plo)) : glm::vec3(1e9f);
+    const glm::vec3 posMe = plo && FCidDerivedFrom(plo->Cid(), 0x30) ? PosLoWorld(plo) : glm::vec3(1e9f);
     std::unordered_set<uint64_t> setNow;
     for (const auto& [key, palo] : aroot)
         if (palo->fInWorld && !FMirrored(key))
@@ -961,6 +965,7 @@ void OnState(READER& r)
     pose.step = r.Get<uint32_t>();
     pose.iwrec = r.Get<int32_t>();
     pose.oidPlayer = r.Get<int32_t>();
+    pose.posPlayer = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
     int cxfLeft = c_cxfMax;
     if (!FGetTree(r, pose.tree, cxfLeft)) return;
     pose.tRecv = TNow();
@@ -1061,11 +1066,16 @@ void SendState(SW* psw)
     if (!fPlayer)
     {
         w.Put<int32_t>(-1);
+        w.Put<float>(0.0f), w.Put<float>(0.0f), w.Put<float>(0.0f);
         w.Put<uint16_t>(0);
         Send(s_ppeer, w, c_chanState, false);
         return;
     }
     w.Put<int32_t>(plo->oid);
+    {
+        const glm::vec3 p = PosLoWorld(plo);
+        w.Put<float>(p.x), w.Put<float>(p.y), w.Put<float>(p.z);
+    }
     int cxfLeft = c_cxfMax;
     PutTree(w, psw, static_cast<ALO*>(plo), cxfLeft);
     Send(s_ppeer, w, c_chanState, false);
@@ -1235,7 +1245,7 @@ void DumpGuards(SW* psw)
     std::vector<std::pair<uint64_t, ALO*>> aroot;
     CollectGuardRoots(psw, aroot);
     LO* ploMe = PloPoCurrent(psw);
-    const glm::vec3 posMe = ploMe && FCidDerivedFrom(ploMe->Cid(), 0x30) ? PosRoot(static_cast<ALO*>(ploMe)) : glm::vec3(0.0f);
+    const glm::vec3 posMe = ploMe && FCidDerivedFrom(ploMe->Cid(), 0x30) ? PosLoWorld(ploMe) : glm::vec3(0.0f);
     glm::vec3 posOther(1e9f);
     const bool fOther = FPosRemote(posOther);
     std::printf("co-op guards at step %u: world %d, me %.0f %.0f %.0f, other %s %.0f %.0f %.0f, %zu roots, roster %zu (world %d), snaps %zu\n",
