@@ -373,6 +373,7 @@ void ChangeTaskState(TASK* p, int n)
 {
     const int nOld = p->nState;
     if (n == nOld || g_taskmgr.fBusy) return;
+    if (FCoopBlockTaskState(nOld, n)) return;   // (coop.h: the joiner's own job failures; the host's decide)
     CoopOnTaskState(p->oid, nOld, n);   // (coop.h: a step started or done here is told to the other game)
     g_taskmgr.fBusy = true;
     int nFilter = -1;
@@ -825,6 +826,7 @@ void SetProgressPoCurrent(OID oid)
 // orig 0x00165538: the task again from its checkpoint (its world loaded, at +0xB8)
 void RestartTask(TASK* p)
 {
+    CoopOnTaskRestart(p->oid);   // (coop.h: "try again" in either game restarts the job in both)
     CSAVE save(p, 2, nullptr);
     CSAVE saveJob(p->pjob, 2, nullptr);
     if (p->pjob != s_psw->tasks.pjobCur)
@@ -1664,4 +1666,13 @@ void CoopCollectJobObjects(SW* psw, std::unordered_set<int>& setoid)
     }
     if (pjob)
         for (const TASKOBJE& o : pjob->aobje) setoid.insert(o.oidA);
+}
+
+bool FCoopApplyTaskRestart(SW* psw, OID oid)
+{
+    TASK* p = PtaskFind(oid);
+    if (!p || !psw) return false;
+    s_psw = psw;
+    RestartTask(p);
+    return true;
 }

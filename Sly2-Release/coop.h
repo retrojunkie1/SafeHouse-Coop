@@ -73,6 +73,9 @@ bool FCoopMissionSeesRemote(DETECTOR* pdet, LO* pso);
 bool FCoopDetectorSeesPoint(DETECTOR* pdet, const glm::vec3& posAi, const glm::vec3& posDet);
 // (task.cpp) a task's state changing here (1: started, 2: done) is sent to the other game; the other's applied here
 void CoopOnTaskState(int oid, int nOld, int n);
+bool FCoopBlockTaskState(int nOld, int n);       // the joiner's own job failure (3): not taken (the host's decides)
+void CoopOnTaskRestart(int oid);                 // a job restarted ("try again") here: restarted in the other game
+bool FCoopApplyTaskRestart(SW* psw, int oid);
 bool FCoopApplyTaskState(SW* psw, int oid, int n);
 // (activate.cpp) the other player's character's place in this world: its surroundings are activated too (guards and
 // their pooled instances placed there, objects updated), so both games have the guards around both players

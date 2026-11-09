@@ -371,6 +371,7 @@ void SetDetentryState(DETECTOR* pdet, DETENTRY* pe, int n)
 // orig: 0x00153DE0
 void UpdateDetector(DETECTOR* pdet)
 {
+    if (pdet && FCoopSkipUpdate(pdet->ploOwner)) return;   // (co-op: a guard mirrored from the other game: its eyes too)
     for (size_t i = 0; i < pdet->ae.size(); ++i)
     {
         int n = NDetectState(pdet, pdet->ae[i].plo, pdet->ae[i].st);

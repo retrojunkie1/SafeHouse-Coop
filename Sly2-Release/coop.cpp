@@ -50,13 +50,13 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 12;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 13;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
 constexpr int c_cxfMax = 512;                   // records per player pose (Sly's tree has well under 200)
 constexpr int c_cxfActorsMax = 6000;            // records per guards message
-constexpr int c_cactorMax = 10;                 // guards sent per message (the nearest to the joiner)
+constexpr int c_cactorMax = 12;                 // guards sent per message (the nearest to the joiner)
 constexpr float c_sActorRadius = 25000.0f;      // and within this distance of the joiner (cm)
 constexpr int c_dstepActors = 4;                // the guards sent every 4th step (15 a second)
 
@@ -71,6 +71,7 @@ enum MSG : uint8_t
     MSG_Hit = 7,        // reliable, either way: a hit on a guard the other game runs
     MSG_TaskState = 9,  // reliable, either way: a step of the shared job started (1) or done (2) in the sender's game
     MSG_Pad = 10,       // reliable, either way: a switch / bell / plate turned on or off in the sender's game
+    MSG_TaskRestart = 11, // reliable, either way: the job restarted ("try again") in the sender's game
     MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
 
@@ -612,6 +613,10 @@ bool FGuardEngaged(SW* psw, ALO* palo)
     return false;
 }
 
+// the guards that may run in the joiner's game: the patrolling guards (classes 0x39 / 0x3A); the story characters,
+// bosses and NPCs (0x3B.., Dimitri) always run in the host's game, where their scripts and jobs run
+bool FHandoverClass(const LO* plo) { return plo && (plo->Cid() == 0x39 || plo->Cid() == 0x3A); }
+
 // the current job's characters (the host's game runs them: the job's scripts run there), refreshed twice a second
 const std::unordered_set<int>& SetJobObjects(SW* psw)
 {
@@ -660,7 +665,7 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
     for (const auto& [key, palo] : aroot)
     {
         if (!fJoin || !palo->fInWorld || s_setDead.count(key) || !s_setJoinHas.count(key)) continue;
-        if (SetJobObjects(psw).count(palo->oid)) continue;   // (a mission character: always the host's)
+        if (SetJobObjects(psw).count(palo->oid) || !FHandoverClass(palo)) continue;   // (story characters: always the host's)
         const float dH = glm::distance(PosRoot(palo), posHost), dJ = glm::distance(PosRoot(palo), posJoin);
         auto it = s_mptOwnedJoin.find(key);
         const bool fWas = it != s_mptOwnedJoin.end();
@@ -738,6 +743,8 @@ void SendActors(SW* psw)
         if (d > c_sActorRadius) continue;
         asel.push_back({d, kr});
     }
+    for (auto& e : asel)
+        if (!FHandoverClass(e.second.second)) e.first -= 1e6f;   // (story characters always sent: first)
     std::sort(asel.begin(), asel.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
     if (asel.size() > size_t(c_cactorMax)) asel.resize(c_cactorMax);
     WRITER w;
@@ -872,6 +879,7 @@ void WatchJoinerTask()
 
 bool s_fApplyingTask = false;
 bool s_fApplyingPad = false;
+bool s_fApplyingRestart = false;
 void OnTaskState(READER& r)
 {
     const int iwrec = r.Get<int32_t>();
@@ -893,6 +901,17 @@ void OnPad(READER& r)
     const bool f = FCoopApplyPadState(g_psw, oid, iclone, n);
     s_fApplyingPad = false;
     std::printf("co-op: %s's switch %d -> %d: %s\n", s_nameRemote.c_str(), oid, n, f ? "set here" : "already");
+}
+
+void OnTaskRestart(READER& r)
+{
+    const int iwrec = r.Get<int32_t>();
+    const OID oid = r.Get<int32_t>();
+    if (!r.fOk || !g_psw || g_transition.fPending || iwrec != g_transition.iwrecCur) return;
+    s_fApplyingRestart = true;
+    const bool f = FCoopApplyTaskRestart(g_psw, oid);
+    s_fApplyingRestart = false;
+    std::printf("co-op: %s restarted task %d: %s\n", s_nameRemote.c_str(), oid, f ? "restarted here" : "not here");
 }
 
 void OnTaskReq(READER& r)
@@ -1160,6 +1179,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_TaskReq: if (!fJoin) OnTaskReq(r); break;
     case MSG_TaskState: OnTaskState(r); break;
     case MSG_Pad: OnPad(r); break;
+    case MSG_TaskRestart: OnTaskRestart(r); break;
     default: break;
     }
 }
@@ -1504,6 +1524,25 @@ bool FCoopActivationPos(glm::vec3& pos)
     return FPosRemote(pos);
 }
 
+bool FCoopBlockTaskState(int nOld, int n)
+{
+    if (s_opt.mode != COOPMODE_Join || !FConnected() || s_fApplyingTask || n != 3 || nOld == 3) return false;
+    if (s_worldHost.oidJob < 0) return false;
+    static double s_tLog = 0.0;
+    if (TNow() - s_tLog > 2.0) s_tLog = TNow(), std::printf("co-op: a job failure here not taken (the host's game decides)\n");
+    return true;
+}
+
+void CoopOnTaskRestart(int oid)
+{
+    if (!FConnected() || s_fApplyingRestart || s_fApplyingTask || g_transition.fPending) return;
+    WRITER w;
+    w.Put<uint8_t>(MSG_TaskRestart);
+    w.Put<int32_t>(g_transition.iwrecCur);
+    w.Put<int32_t>(oid);
+    Send(s_ppeer, w, c_chanReliable, true);
+}
+
 void CoopOnTaskState(int oid, int nOld, int n)
 {
     // (the started (1) and done (2) steps; a failure (3: caught) stays in its game, each player respawning alone;
@@ -1538,7 +1577,7 @@ bool FCoopMissionSeesRemote(DETECTOR* pdet, LO* pso)
     if (p.iwrec != g_transition.iwrecCur || p.oidPlayer < 0 || p.fUnseen || TNow() - p.tRecv > 0.5) return false;
     const LO* proot = pdet->ploOwner;
     while (proot->paloParent) proot = proot->paloParent;
-    if (!SetJobObjects(g_psw).count(proot->oid) && !SetJobObjects(g_psw).count(pdet->ploOwner->oid)) return false;
+    if (FHandoverClass(proot) && !SetJobObjects(g_psw).count(proot->oid)) return false;   // (a guard: handed over instead)
     const bool f = FCoopDetectorSeesPoint(pdet, p.posAi, p.posDet);
     static double s_tLog = 0.0;
     if (f && TNow() - s_tLog > 2.0)
