@@ -5,6 +5,7 @@
 //   Sly2-Release [--world W] [--frames N] [--headless] [--fixed-dt] [--press BTN@frame+n,...]
 //               [--frame-dump file] [--screenshot file]
 
+#include "coop.h"
 #include <malloc.h>
 #include "so.h"
 #include "crv.h"
@@ -1647,6 +1648,7 @@ int RunGame(const GAMEOPTS& go)
                 s_serialRoot = psw->serial, s_cploRoot = psw->aploAll.size(), s_cParentRoot = g_cLoParentChanges;
             }
             for (ALO* palo : s_apaloRoot) UpdateAloHierarchyWorlds(palo);
+            CoopAfterWorlds();   // (coop.h: the joiner's guards posed as the host's)
         }
         DrawSlys(psw.get());
         DebugHitHideHolders(psw.get());   // (debug: hide.h)   // orig 0x18A238: the draw's own placement (state 3's cane on the hook), each step as drawn

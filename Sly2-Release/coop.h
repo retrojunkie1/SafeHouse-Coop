@@ -23,6 +23,7 @@ struct SW;
 struct ALO;
 struct LO;
 struct CTMSG;
+struct XF;
 
 enum COOPMODE
 {
@@ -58,6 +59,8 @@ bool FCoopTakeSceneRebuild();
 // The joiner's guards: the host's are shown, so the joiner's own do not think (update.cpp skips them), and the hits
 // on them go to the host (guardphys.cpp: true when sent there, the hit then not taken here).
 bool FCoopSkipUpdate(const LO* plo);
+// (game.cpp) after the step's world matrices are rebuilt from the local ones: the mirrored guards' poses written again
+void CoopAfterWorlds();
 bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm);
 // (guardphys.cpp) the guards' contact handler, for the hits the joiner sends the host
 bool FCoopGuardAcceptContact(ALO* palo, CTMSG* pctm);

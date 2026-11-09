@@ -50,8 +50,8 @@ constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
 constexpr int c_cxfMax = 512;                   // records per player pose (Sly's tree has well under 200)
 constexpr int c_cxfActorsMax = 6000;            // records per guards message
-constexpr int c_cactorMax = 24;                 // guards sent per message (the nearest to the joiner)
-constexpr float c_sActorRadius = 9000.0f;       // and within this distance of the joiner (cm)
+constexpr int c_cactorMax = 16;                 // guards sent per message (the nearest to the joiner)
+constexpr float c_sActorRadius = 25000.0f;      // and within this distance of the joiner (cm)
 constexpr int c_dstepActors = 2;                // the guards sent every 2nd step (30 a second)
 
 enum MSG : uint8_t
@@ -232,7 +232,7 @@ bool FGetTree(READER& r, TREEPOSE& tree, int& cxfLeft)
 
 // A tree's pose applied to its objects (mpoid: the receiving tree's objects by oid), between a and b at u
 void ApplyTree(const TREEPOSE& a, const TREEPOSE* pb, float u, const std::unordered_map<int, ALO*>& mpoid,
-               std::unordered_map<const ALO*, bool>& mpfDrawn)
+               std::unordered_map<const ALO*, bool>& mpfDrawn, std::vector<std::pair<XF*, glm::mat4>>* pamat = nullptr)
 {
     for (size_t i = 0; i < a.size(); ++i)
     {
@@ -246,6 +246,7 @@ void ApplyTree(const TREEPOSE& a, const TREEPOSE* pb, float u, const std::unorde
         {
             const XFPOSE x = (apb && k < apb->axf.size()) ? Lerp(apa.axf[k], apb->axf[k], u) : apa.axf[k];
             palo->axf[k]->matWorld = MatFromXfpose(x);
+            if (pamat) pamat->emplace_back(palo->axf[k].get(), palo->axf[k]->matWorld);
         }
         // drawn, fade and mesh groups: the nearer pose's (they switch, not blend), the fade blended
         const ALOPOSE& apn = (apb && u >= 0.5f) ? *apb : apa;
@@ -340,6 +341,8 @@ struct MIRROR
     std::unordered_set<const LO*> setFrozen;                   // every object of the guards' trees (no update)
     std::unordered_map<const ALO*, bool> mpfDrawn;             // per object: drawn in the pose shown
     std::unordered_map<const ALO*, uint64_t> mpRootKey;
+    std::vector<std::pair<XF*, glm::mat4>> amat;            // the records posed this step (written again after the
+                                                               // game rebuilds the worlds from the locals: CoopAfterWorlds)
     bool fActive = false;
 } s_mirror;
 
@@ -635,6 +638,7 @@ void BuildMirror(SW* psw)
 void StepMirror(SW* psw)
 {
     s_mirror.mpfDrawn.clear();
+    s_mirror.amat.clear();
     s_mirror.fActive = false;
     if (s_opt.mode != COOPMODE_Join || !FConnected() || !psw || g_transition.fPending || s_asnap.empty()) return;
     const ACTORSNAP& newest = s_asnap.back();
@@ -660,7 +664,7 @@ void StepMirror(SW* psw)
         const TREEPOSE* ptb = nullptr;
         if (pb)
             if (auto itb = pb->mpkey.find(key); itb != pb->mpkey.end()) ptb = &itb->second;
-        ApplyTree(tree, ptb, u, s_mirror.mpRootOid[itRoot->second], s_mirror.mpfDrawn);
+        ApplyTree(tree, ptb, u, s_mirror.mpRootOid[itRoot->second], s_mirror.mpfDrawn, &s_mirror.amat);
     }
     // the guards the host did not send (out of range, or out of its world): hidden
     for (const auto& [key, palo] : s_mirror.mpkeyRoot)
@@ -1004,6 +1008,12 @@ void CoopOnWorldStarted(SW*)
     // (a world's start clears the bone table and frees the running world's objects: bind again on the next step)
     ResetRemote();
     ResetMirror();
+}
+
+void CoopAfterWorlds()
+{
+    if (!s_mirror.fActive) return;
+    for (const auto& [pxf, m] : s_mirror.amat) pxf->matWorld = m;
 }
 
 bool FCoopSkipUpdate(const LO* plo)
