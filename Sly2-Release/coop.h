@@ -64,6 +64,9 @@ bool FCoopTakeSceneRebuild();
 bool FCoopSkipUpdate(const LO* plo);
 // (pad.cpp) a switch / bell / plate turned on (1) or off (0) here is set in the other game too; the other's set here
 void CoopOnPadState(int oid, int iclone, int n);
+// (scpt.cpp) a script started here (the host's go to the joiner: cutscenes, failure screens, scripted moves)
+void CoopOnScptStart(LO* pscpt, LO* ploStarter);
+bool FCoopApplyScptStart(SW* psw, int oid, int iclone, int oidStarter, bool fPlayer);
 bool FCoopApplyPadState(SW* psw, int oid, int iclone, int n);
 // (task.cpp) the objects of the current job's steps (its characters stay in the host's game)
 void CoopCollectJobObjects(SW* psw, std::unordered_set<int>& setoid);

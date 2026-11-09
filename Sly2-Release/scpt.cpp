@@ -1,6 +1,7 @@
 // scpt.cpp: the scripts (scpt.h). Ported from the Sly 2 decomp's matching C (src/hand, src/auto, src/splicewrap:
 // 0x1DFAD8..0x1E5D80, the wrappers 0x106A80..0x10A438) and the reference's m_1DFB10_p3.cpp (0x1E3890) and
 // m_1E1E30_p3.cpp (0x1E1E30).
+#include "coop.h"
 #include "scpt.h"
 #include "worldglobals.h"
 #include "transition.h"
@@ -1856,6 +1857,7 @@ void StartScptImpl(LO* pscpt, LO* ploStarter)
     if (!ps || ps->fRunning) return;
     static const bool s_fOff = std::getenv("SLY2N_NOSCPT") != nullptr;  // (debug: no script runs)
     if (s_fOff) return;
+    CoopOnScptStart(pscpt, ploStarter);   // (coop.h: the host's cutscenes, failure screens, scripted moves run in both)
     if (std::getenv("SLY2N_SCPTDIALOG"))  // (debug: the scripts with dialog lines as they start)
     {
         int c = 0, idFirst = -1;
@@ -2628,3 +2630,22 @@ void DriveScptActor(void* pv, PADCTL* out)
 
 // (for the binocucom's slots 83 / 84, binoc.cpp: 0x143EE0 / 0x143FF8)
 void PlayActorScriptAnimLo(LO* ploActor, LO* plo, int oid, int grfapl) { PlayActorScriptAnim(ploActor, plo, oid, grfapl, 5); }
+
+// (co-op, coop.h) the other game's script started here (fPlayer: started by that game's player: this game's starts it)
+bool FCoopApplyScptStart(SW* psw, int oid, int iclone, int oidStarter, bool fPlayer)
+{
+    if (!psw) return false;
+    LO* pscpt = nullptr;
+    LO* ploStarter = fPlayer ? PloPoCurrent(psw) : nullptr;
+    for (const auto& up : psw->aploAll)
+    {
+        LO* plo = up.get();
+        if (!plo) continue;
+        if (!pscpt && plo->oid == oid && plo->iclone == iclone && PscptOf(plo)) pscpt = plo;
+        if (!fPlayer && !ploStarter && oidStarter >= 0 && plo->oid == oidStarter) ploStarter = plo;
+    }
+    SCPT* ps = pscpt ? PscptOf(pscpt) : nullptr;
+    if (!ps || ps->fRunning) return false;
+    StartScptImpl(pscpt, ploStarter);
+    return true;
+}

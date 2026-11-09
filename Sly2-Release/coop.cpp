@@ -50,7 +50,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 13;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 14;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -72,6 +72,7 @@ enum MSG : uint8_t
     MSG_TaskState = 9,  // reliable, either way: a step of the shared job started (1) or done (2) in the sender's game
     MSG_Pad = 10,       // reliable, either way: a switch / bell / plate turned on or off in the sender's game
     MSG_TaskRestart = 11, // reliable, either way: the job restarted ("try again") in the sender's game
+    MSG_Scpt = 12,      // reliable, host -> joiner: a script started in the host's game (cutscene, failure screen)
     MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
 
@@ -472,8 +473,11 @@ void ResetRemote()
     s_remote = REMOTE{};
 }
 
+std::unordered_map<const LO*, double> s_mptScptLocal;   // joiner: the scripts it started itself, when
+
 void ResetMirror()
 {
+    s_mptScptLocal.clear();
     s_mirror = MIRROR{};
     s_asnap.clear();
     s_mpRoster.clear();
@@ -880,6 +884,7 @@ void WatchJoinerTask()
 bool s_fApplyingTask = false;
 bool s_fApplyingPad = false;
 bool s_fApplyingRestart = false;
+bool s_fApplyingScpt = false;
 void OnTaskState(READER& r)
 {
     const int iwrec = r.Get<int32_t>();
@@ -912,6 +917,22 @@ void OnTaskRestart(READER& r)
     const bool f = FCoopApplyTaskRestart(g_psw, oid);
     s_fApplyingRestart = false;
     std::printf("co-op: %s restarted task %d: %s\n", s_nameRemote.c_str(), oid, f ? "restarted here" : "not here");
+}
+
+void OnScpt(READER& r)
+{
+    const int iwrec = r.Get<int32_t>();
+    const int oid = r.Get<int32_t>(), iclone = r.Get<int32_t>(), oidStarter = r.Get<int32_t>();
+    const bool fPlayer = r.Get<uint8_t>() != 0;
+    if (!r.fOk || !g_psw || g_transition.fPending || iwrec != g_transition.iwrecCur) return;
+    // (one this game started itself just now, e.g. by the shared bell: not again)
+    for (const auto& up : g_psw->aploAll)
+        if (up && up->oid == oid && up->iclone == iclone)
+            if (auto it = s_mptScptLocal.find(up.get()); it != s_mptScptLocal.end() && TNow() - it->second < 4.0) return;
+    s_fApplyingScpt = true;
+    const bool f = FCoopApplyScptStart(g_psw, oid, iclone, oidStarter, fPlayer);
+    s_fApplyingScpt = false;
+    std::printf("co-op: the host's script %d started%s: %s\n", oid, fPlayer ? " by its player" : "", f ? "started here" : "running / not here");
 }
 
 void OnTaskReq(READER& r)
@@ -1179,6 +1200,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_TaskReq: if (!fJoin) OnTaskReq(r); break;
     case MSG_TaskState: OnTaskState(r); break;
     case MSG_Pad: OnPad(r); break;
+    case MSG_Scpt: if (fJoin) OnScpt(r); break;
     case MSG_TaskRestart: OnTaskRestart(r); break;
     default: break;
     }
@@ -1531,6 +1553,24 @@ bool FCoopBlockTaskState(int nOld, int n)
     static double s_tLog = 0.0;
     if (TNow() - s_tLog > 2.0) s_tLog = TNow(), std::printf("co-op: a job failure here not taken (the host's game decides)\n");
     return true;
+}
+
+void CoopOnScptStart(LO* pscpt, LO* ploStarter)
+{
+    if (!FConnected() || !pscpt || g_transition.fPending) return;
+    if (s_opt.mode == COOPMODE_Join)
+    {
+        if (!s_fApplyingScpt) s_mptScptLocal[pscpt] = TNow();
+        return;
+    }
+    const bool fPlayer = ploStarter && g_psw && ploStarter == PloPoCurrent(g_psw);
+    WRITER w;
+    w.Put<uint8_t>(MSG_Scpt);
+    w.Put<int32_t>(g_transition.iwrecCur);
+    w.Put<int32_t>(pscpt->oid), w.Put<int32_t>(pscpt->iclone);
+    w.Put<int32_t>(ploStarter ? ploStarter->oid : -1);
+    w.Put<uint8_t>(fPlayer ? 1 : 0);
+    Send(s_ppeer, w, c_chanReliable, true);
 }
 
 void CoopOnTaskRestart(int oid)
