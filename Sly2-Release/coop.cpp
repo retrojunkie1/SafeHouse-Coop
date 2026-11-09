@@ -14,6 +14,7 @@
 #include "glob.h"
 #include "aihit.h"
 #include "guard.h"
+#include "detect.h"
 #include "disc.h"
 #include "lo.h"
 #include "pcloader.h"
@@ -47,7 +48,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 4;              // 4: guards run by the nearer player, compact poses
+constexpr uint16_t c_protocol = 5;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -389,6 +390,9 @@ std::unordered_map<uint64_t, double> s_mptPoseJoin;  // host: the last pose of e
 std::unordered_map<uint64_t, double> s_mptBlock;     // host: not given to the joiner again before then
 std::unordered_map<uint64_t, glm::vec3> s_mpposLast; // the last place of each guard this game ran
 std::unordered_set<uint64_t> s_setRanLast;           // the guards this game ran and had in its world last time
+std::unordered_map<uint64_t, double> s_mptEngaged;   // host: when each guard was last after a player (seeing,
+                                                     // suspicious, chasing: its detector has the player)
+constexpr double c_dtEngagedHold = 6.0;              // it stays in that player's game this long after
 struct MIRROR
 {
     uint32_t serialWorld = 0;
@@ -466,6 +470,7 @@ void ResetMirror()
     s_mptOwnedJoin.clear();
     s_mptPoseJoin.clear();
     s_mptBlock.clear();
+    s_mptEngaged.clear();
     s_mpposLast.clear();
     s_setRanLast.clear();
 }
@@ -580,7 +585,26 @@ bool FMirrored(uint64_t key)
     return s_iwrecRoster == g_transition.iwrecCur && it != s_mpRoster.end() && !it->second;
 }
 
-// host: who runs each guard
+// a guard this game runs is after this game's player: its detector sees or suspects the player (or what the player
+// holds or rides)
+bool FGuardEngaged(SW* psw, ALO* palo)
+{
+    GUARD* pg = PguardFromLo(palo);
+    LO* ploMe = PloPoCurrent(psw);
+    if (!pg || !pg->pdet || !ploMe) return false;
+    for (const DETENTRY& e : pg->pdet->ae)
+    {
+        if (e.st < 1 || !e.plo) continue;
+        const LO* plo = e.plo;
+        while (plo->paloParent) plo = plo->paloParent;
+        if (plo == ploMe) return true;
+    }
+    return false;
+}
+
+// host: who runs each guard. A calm guard: the nearer player's game (with a margin). A guard after a player (seen,
+// suspicious, chasing, searching: the last c_dtEngagedHold s) stays in the game it runs in, so it keeps after the
+// player it found while the other one passes by.
 void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
 {
     glm::vec3 posJoin;
@@ -595,7 +619,10 @@ void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
         const float dH = glm::distance(PosRoot(palo), posHost), dJ = glm::distance(PosRoot(palo), posJoin);
         auto it = s_mptOwnedJoin.find(key);
         const bool fWas = it != s_mptOwnedJoin.end();
-        bool fJoinRuns = fWas ? dJ < dH + 600.0f : dJ + 600.0f < dH;
+        if (!fWas && FGuardEngaged(psw, palo)) s_mptEngaged[key] = t;   // (the host's guard after the host)
+        const auto ie = s_mptEngaged.find(key);
+        const bool fEngaged = ie != s_mptEngaged.end() && t - ie->second < c_dtEngagedHold;
+        bool fJoinRuns = fEngaged ? fWas : (fWas ? dJ < dH + 600.0f : dJ + 600.0f < dH);
         if (!fWas && fJoinRuns)
             if (auto ib = s_mptBlock.find(key); ib != s_mptBlock.end() && t < ib->second) fJoinRuns = false;
         // (given but no pose came back: the joiner has no such guard here; it stays the host's for a while)
@@ -688,6 +715,7 @@ void SendActors(SW* psw)
     for (const auto& s : asel)
     {
         w.Put<uint64_t>(s.second.first);
+        w.Put<uint8_t>(!fHost && FGuardEngaged(psw, s.second.second) ? 1 : 0);   // (the joiner's guard after the joiner)
         PutTree(w, psw, s.second.second, cxfLeft);
     }
     if (!s_ppeer) return;
@@ -805,8 +833,10 @@ void OnActors(READER& r)
     for (int i = 0; i < c && r.fOk; ++i)
     {
         const uint64_t key = r.Get<uint64_t>();
+        const bool fEngaged = r.Get<uint8_t>() != 0;
         TREEPOSE tree;
         if (!FGetTree(r, tree, cxfLeft)) return;
+        if (fEngaged && !fFromHost) s_mptEngaged[key] = TNow();
         snap.mpkey.emplace(key, std::move(tree));
     }
     if (!r.fOk) return;
