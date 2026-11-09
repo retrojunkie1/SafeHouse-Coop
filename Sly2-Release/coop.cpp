@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -46,15 +47,15 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 3;              // 3: the world, the save, the guards, hits
+constexpr uint16_t c_protocol = 4;              // 4: guards run by the nearer player, compact poses
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
 constexpr int c_cxfMax = 512;                   // records per player pose (Sly's tree has well under 200)
 constexpr int c_cxfActorsMax = 6000;            // records per guards message
-constexpr int c_cactorMax = 16;                 // guards sent per message (the nearest to the joiner)
+constexpr int c_cactorMax = 10;                 // guards sent per message (the nearest to the joiner)
 constexpr float c_sActorRadius = 25000.0f;      // and within this distance of the joiner (cm)
-constexpr int c_dstepActors = 2;                // the guards sent every 2nd step (30 a second)
+constexpr int c_dstepActors = 4;                // the guards sent every 4th step (15 a second)
 
 enum MSG : uint8_t
 {
@@ -165,24 +166,35 @@ void CollectTree(ALO* palo, std::vector<ALO*>& apalo)
         if (pc && FCidDerivedFrom(pc->Cid(), 0x30)) CollectTree(static_cast<ALO*>(pc), apalo);
 }
 
-// A tree on the wire: per object its oid, drawn flag, fade, shown groups, then its records (position as 3 floats,
-// rotation as 4 shorts, the scale only when not 1).
+// A tree on the wire (compact): per object its oid, flags (1 drawn, 2 a fade follows, 4 shown groups follow), then
+// its records. Each record: a flags byte (bits 0-1 the rotation's dropped component, 4 a scale follows, 8 a full
+// position follows), the position (the tree's first record: 3 floats; the others: 3 shorts in quarter units from
+// it, unless out of range), the rotation's other three components as shorts ("smallest three").
+constexpr float c_rSqrtHalf = 0.70710678f;
 void PutTree(WRITER& w, const SW* psw, ALO* proot, int& cxfLeft)
 {
     std::vector<ALO*> apalo;
     CollectTree(proot, apalo);
     w.Put<uint16_t>(uint16_t(apalo.size()));
+    bool fFirst = true;
+    glm::vec3 posBase(0.0f);
     for (ALO* pa : apalo)
     {
         w.Put<int32_t>(pa->oid);
-        w.Put<uint8_t>(psw && FAloDrawn(psw, pa) ? 1 : 0);
-        w.Put<float>(pa->gFade);
-        const size_t cglob = std::min<size_t>(pa->aglobShown.size(), 255);
-        w.Put<uint8_t>(uint8_t(cglob));
-        for (size_t g = 0; g < cglob; ++g)
+        const bool fDrawn = psw && FAloDrawn(psw, pa);
+        const bool fFade = pa->gFade != 1.0f;
+        const bool fGlob = !pa->aglobShown.empty();
+        w.Put<uint8_t>(uint8_t((fDrawn ? 1 : 0) | (fFade ? 2 : 0) | (fGlob ? 4 : 0)));
+        if (fFade) w.Put<float>(pa->gFade);
+        if (fGlob)
         {
-            w.Put<int32_t>(pa->aglobShown[g].first);
-            w.Put<uint8_t>(pa->aglobShown[g].second ? 1 : 0);
+            const size_t cglob = std::min<size_t>(pa->aglobShown.size(), 255);
+            w.Put<uint8_t>(uint8_t(cglob));
+            for (size_t g = 0; g < cglob; ++g)
+            {
+                w.Put<int32_t>(pa->aglobShown[g].first);
+                w.Put<uint8_t>(pa->aglobShown[g].second ? 1 : 0);
+            }
         }
         const int c = std::max(0, std::min<int>(int(pa->axf.size()), cxfLeft));
         cxfLeft -= c;
@@ -190,12 +202,21 @@ void PutTree(WRITER& w, const SW* psw, ALO* proot, int& cxfLeft)
         for (int i = 0; i < c; ++i)
         {
             const XFPOSE x = XfposeFromMat(pa->axf[size_t(i)]->matWorld);
-            w.Put<float>(x.pos.x), w.Put<float>(x.pos.y), w.Put<float>(x.pos.z);
-            auto q16 = [](float g) { return int16_t(std::clamp(g, -1.0f, 1.0f) * 32767.0f); };
-            w.Put<int16_t>(q16(x.rot.x)), w.Put<int16_t>(q16(x.rot.y)), w.Put<int16_t>(q16(x.rot.z)), w.Put<int16_t>(q16(x.rot.w));
+            const float aq[4] = {x.rot.x, x.rot.y, x.rot.z, x.rot.w};
+            int iMax = 0;
+            for (int k = 1; k < 4; ++k)
+                if (std::fabs(aq[k]) > std::fabs(aq[iMax])) iMax = k;
+            const float sgn = aq[iMax] < 0.0f ? -1.0f : 1.0f;
             const bool fScale = glm::any(glm::greaterThan(glm::abs(x.scale - glm::vec3(1.0f)), glm::vec3(1e-3f)));
-            w.Put<uint8_t>(fScale ? 1 : 0);
+            const glm::vec3 d = (x.pos - posBase) * 4.0f;
+            const bool fFull = fFirst || glm::any(glm::greaterThan(glm::abs(d), glm::vec3(32000.0f)));
+            w.Put<uint8_t>(uint8_t(iMax | (fScale ? 4 : 0) | (fFull ? 8 : 0)));
+            if (fFull) w.Put<float>(x.pos.x), w.Put<float>(x.pos.y), w.Put<float>(x.pos.z);
+            else w.Put<int16_t>(int16_t(std::lround(d.x))), w.Put<int16_t>(int16_t(std::lround(d.y))), w.Put<int16_t>(int16_t(std::lround(d.z)));
+            for (int k = 0; k < 4; ++k)
+                if (k != iMax) w.Put<int16_t>(int16_t(std::lround(std::clamp(aq[k] * sgn / c_rSqrtHalf, -1.0f, 1.0f) * 32767.0f)));
             if (fScale) w.Put<float>(x.scale.x), w.Put<float>(x.scale.y), w.Put<float>(x.scale.z);
+            if (fFirst) posBase = x.pos, fFirst = false;
         }
     }
 }
@@ -203,34 +224,56 @@ void PutTree(WRITER& w, const SW* psw, ALO* proot, int& cxfLeft)
 bool FGetTree(READER& r, TREEPOSE& tree, int& cxfLeft)
 {
     const uint16_t calo = r.Get<uint16_t>();
+    bool fFirst = true;
+    glm::vec3 posBase(0.0f);
     for (int i = 0; i < calo && r.fOk; ++i)
     {
         ALOPOSE ap;
         ap.oid = r.Get<int32_t>();
-        ap.fDrawn = (r.Get<uint8_t>() & 1) != 0;
-        ap.gFade = r.Get<float>();
-        const uint8_t cglob = r.Get<uint8_t>();
-        for (int g = 0; g < cglob && r.fOk; ++g)
+        const uint8_t grf = r.Get<uint8_t>();
+        ap.fDrawn = (grf & 1) != 0;
+        ap.gFade = (grf & 2) ? r.Get<float>() : 1.0f;
+        if (grf & 4)
         {
-            const int32_t n = r.Get<int32_t>();
-            ap.aglobShown.emplace_back(n, r.Get<uint8_t>() != 0);
+            const uint8_t cglob = r.Get<uint8_t>();
+            for (int g = 0; g < cglob && r.fOk; ++g)
+            {
+                const int32_t n = r.Get<int32_t>();
+                ap.aglobShown.emplace_back(n, r.Get<uint8_t>() != 0);
+            }
         }
         const uint16_t c = r.Get<uint16_t>();
         cxfLeft -= c;
-        if (cxfLeft < 0) return false;
+        if (cxfLeft < 0 || !r.fOk) return false;
         ap.axf.resize(c);
         for (XFPOSE& x : ap.axf)
         {
-            x.pos = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
-            const float qx = r.Get<int16_t>() / 32767.0f, qy = r.Get<int16_t>() / 32767.0f;
-            const float qz = r.Get<int16_t>() / 32767.0f, qw = r.Get<int16_t>() / 32767.0f;
-            x.rot = glm::normalize(glm::quat(qw, qx, qy, qz));
-            if (r.Get<uint8_t>()) x.scale = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
+            const uint8_t g = r.Get<uint8_t>();
+            if (g & 8) x.pos = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
+            else
+            {
+                const float dx = r.Get<int16_t>(), dy = r.Get<int16_t>(), dz = r.Get<int16_t>();
+                x.pos = posBase + glm::vec3(dx, dy, dz) * 0.25f;
+            }
+            float aq[4];
+            float sum = 0.0f;
+            const int iMax = g & 3;
+            for (int k = 0; k < 4; ++k)
+                if (k != iMax)
+                {
+                    aq[k] = r.Get<int16_t>() / 32767.0f * c_rSqrtHalf;
+                    sum += aq[k] * aq[k];
+                }
+            aq[iMax] = std::sqrt(std::max(0.0f, 1.0f - sum));
+            x.rot = glm::normalize(glm::quat(aq[3], aq[0], aq[1], aq[2]));
+            if (g & 4) x.scale = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
+            if (fFirst) posBase = x.pos, fFirst = false;
         }
         tree.push_back(std::move(ap));
     }
     return r.fOk;
 }
+
 
 // A tree's pose applied to its objects (mpoid: the receiving tree's objects by oid), between a and b at u
 void ApplyTree(const TREEPOSE& a, const TREEPOSE* pb, float u, const std::unordered_map<int, ALO*>& mpoid,
@@ -325,25 +368,37 @@ GAMESAVE s_gamesaveHost;               // joiner: the host's save, as last recei
 bool s_fHaveSaveHost = false;
 uint64_t s_hashSaveSent = 0;           // host: the save last sent
 
-// --- the guards (joiner: the host's, mirrored)
+// --- the guards: each runs in one game (its owner) and the other game mirrors it. The host decides: a guard nearer
+// the joiner's character than the host's (by a margin) is the joiner's, so it sees, chases and fights the joiner, and
+// the joiner's hits on it land in the game running it. The host tells the joiner every guard it has (its roster:
+// key, owner) and the guards it knocked out; a guard the joiner has but the host does not (the host is far away: its
+// pool never placed one there) runs in the joiner's game alone.
 struct ACTORSNAP
 {
     uint32_t step = 0;
     int iwrec = -1;
     double tRecv = 0.0;
-    std::unordered_map<uint64_t, TREEPOSE> mpkey;   // per guard: (root oid, ordinal among the roots with that oid)
+    std::unordered_map<uint64_t, TREEPOSE> mpkey;   // per guard (CollectGuardRoots' keys)
 };
-std::deque<ACTORSNAP> s_asnap;
+std::deque<ACTORSNAP> s_asnap;                     // the other game's guards' poses
+std::unordered_map<uint64_t, bool> s_mpRoster;     // joiner: the host's guards (true: the joiner's to run)
+int s_iwrecRoster = -1;
+std::unordered_set<uint64_t> s_setDead;            // knocked out (in either game): hidden and frozen in both
+std::unordered_map<uint64_t, double> s_mptOwnedJoin; // host: the joiner's guards, since when
+std::unordered_map<uint64_t, double> s_mptPoseJoin;  // host: the last pose of each from the joiner
+std::unordered_map<uint64_t, double> s_mptBlock;     // host: not given to the joiner again before then
+std::unordered_map<uint64_t, glm::vec3> s_mpposLast; // the last place of each guard this game ran
+std::unordered_set<uint64_t> s_setRanLast;           // the guards this game ran and had in its world last time
 struct MIRROR
 {
     uint32_t serialWorld = 0;
     uint32_t stepBuilt = 0;
-    std::unordered_map<uint64_t, ALO*> mpkeyRoot;              // the joiner's guards by key
+    std::unordered_map<uint64_t, ALO*> mpkeyRoot;              // this game's guards by key
     std::unordered_map<const ALO*, std::unordered_map<int, ALO*>> mpRootOid;   // each one's tree by oid
-    std::unordered_set<const LO*> setFrozen;                   // every object of the guards' trees (no update)
-    std::unordered_map<const ALO*, bool> mpfDrawn;             // per object: drawn in the pose shown
     std::unordered_map<const ALO*, uint64_t> mpRootKey;
-    std::vector<std::pair<XF*, glm::mat4>> amat;            // the records posed this step (written again after the
+    std::unordered_set<const LO*> setFrozen;                   // every object of the mirrored guards' trees (no update)
+    std::unordered_map<const ALO*, bool> mpfDrawn;             // per object: drawn in the pose shown
+    std::vector<std::pair<XF*, glm::mat4>> amat;               // the records posed this step (written again after the
                                                                // game rebuilds the worlds from the locals: CoopAfterWorlds)
     bool fActive = false;
 } s_mirror;
@@ -405,6 +460,14 @@ void ResetMirror()
 {
     s_mirror = MIRROR{};
     s_asnap.clear();
+    s_mpRoster.clear();
+    s_iwrecRoster = -1;
+    s_setDead.clear();
+    s_mptOwnedJoin.clear();
+    s_mptPoseJoin.clear();
+    s_mptBlock.clear();
+    s_mpposLast.clear();
+    s_setRanLast.clear();
 }
 
 // ------------------------------------------------------------ host: the world, the save, the guards
@@ -497,24 +560,102 @@ void CollectGuardRoots(SW* psw, std::vector<std::pair<uint64_t, ALO*>>& a)
     }
 }
 
+glm::vec3 PosRoot(const ALO* palo) { return palo->axf.empty() ? glm::vec3(0.0f) : glm::vec3(palo->axf[0]->matWorld[3]); }
+
+// the other player's character's place in this world (false: not here)
+bool FPosRemote(glm::vec3& pos)
+{
+    if (s_aposeRemote.empty()) return false;
+    const POSE& p = s_aposeRemote.back();
+    if (p.iwrec != g_transition.iwrecCur || p.tree.empty() || p.tree[0].axf.empty()) return false;
+    pos = p.tree[0].axf[0].pos;
+    return true;
+}
+
+bool FMirrored(uint64_t key)
+{
+    if (s_setDead.count(key)) return true;
+    if (s_opt.mode == COOPMODE_Host) return s_mptOwnedJoin.count(key) != 0;
+    auto it = s_mpRoster.find(key);
+    return s_iwrecRoster == g_transition.iwrecCur && it != s_mpRoster.end() && !it->second;
+}
+
+// host: who runs each guard
+void UpdateOwners(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot)
+{
+    glm::vec3 posJoin;
+    LO* ploHost = PloPoCurrent(psw);
+    const bool fJoin = FPosRemote(posJoin) && ploHost && FCidDerivedFrom(ploHost->Cid(), 0x30);
+    const glm::vec3 posHost = fJoin ? PosRoot(static_cast<ALO*>(ploHost)) : glm::vec3(0.0f);
+    const double t = TNow();
+    std::unordered_map<uint64_t, double> mpNew;
+    for (const auto& [key, palo] : aroot)
+    {
+        if (!fJoin || !palo->fInWorld || s_setDead.count(key)) continue;
+        const float dH = glm::distance(PosRoot(palo), posHost), dJ = glm::distance(PosRoot(palo), posJoin);
+        auto it = s_mptOwnedJoin.find(key);
+        const bool fWas = it != s_mptOwnedJoin.end();
+        bool fJoinRuns = fWas ? dJ < dH + 600.0f : dJ + 600.0f < dH;
+        if (!fWas && fJoinRuns)
+            if (auto ib = s_mptBlock.find(key); ib != s_mptBlock.end() && t < ib->second) fJoinRuns = false;
+        // (given but no pose came back: the joiner has no such guard here; it stays the host's for a while)
+        if (fWas && fJoinRuns && t - it->second > 0.75)
+        {
+            auto ip = s_mptPoseJoin.find(key);
+            if (ip == s_mptPoseJoin.end() || t - ip->second > 0.75)
+            {
+                fJoinRuns = false;
+                s_mptBlock[key] = t + 4.0;
+            }
+        }
+        if (fJoinRuns) mpNew[key] = fWas ? it->second : t;
+    }
+    s_mptOwnedJoin = std::move(mpNew);
+}
+
+// knocked out: a guard this game ran that left its world near this game's character (a guard far away leaves when
+// the pool takes it back, not knocked out)
+void FindDead(SW* psw, const std::vector<std::pair<uint64_t, ALO*>>& aroot, std::vector<uint64_t>* paDeadNew)
+{
+    LO* plo = PloPoCurrent(psw);
+    const glm::vec3 posMe = plo && FCidDerivedFrom(plo->Cid(), 0x30) ? PosRoot(static_cast<ALO*>(plo)) : glm::vec3(1e9f);
+    std::unordered_set<uint64_t> setNow;
+    for (const auto& [key, palo] : aroot)
+        if (palo->fInWorld && !FMirrored(key))
+        {
+            setNow.insert(key);
+            s_mpposLast[key] = PosRoot(palo);
+        }
+    for (uint64_t key : s_setRanLast)
+        if (!setNow.count(key) && !FMirrored(key) && glm::distance(s_mpposLast[key], posMe) < 3000.0f && !s_setDead.count(key))
+        {
+            s_setDead.insert(key);
+            if (paDeadNew) paDeadNew->push_back(key);
+            std::printf("co-op: guard %llx knocked out\n", (unsigned long long)key);
+        }
+    s_setRanLast = std::move(setNow);
+}
+
+// the poses of the guards this game runs, nearest the other player first; the host's message also carries its
+// roster and the knocked out guards
 void SendActors(SW* psw)
 {
     if (!psw || g_transition.fPending || s_stepLocal % c_dstepActors) return;
-    // the joiner's position: its newest pose's root (else the host's player)
-    glm::vec3 posJoin(0.0f);
-    bool fPos = false;
-    if (!s_aposeRemote.empty() && !s_aposeRemote.back().tree.empty() && !s_aposeRemote.back().tree[0].axf.empty())
-        posJoin = s_aposeRemote.back().tree[0].axf[0].pos, fPos = true;
-    else if (LO* plo = PloPoCurrent(psw); plo && FCidDerivedFrom(plo->Cid(), 0x30) && !static_cast<ALO*>(plo)->axf.empty())
-        posJoin = glm::vec3(static_cast<ALO*>(plo)->axf[0]->matWorld[3]), fPos = true;
+    const bool fHost = s_opt.mode == COOPMODE_Host;
     std::vector<std::pair<uint64_t, ALO*>> aroot;
     CollectGuardRoots(psw, aroot);
+    if (fHost) UpdateOwners(psw, aroot);
+    std::vector<uint64_t> aDeadNew;
+    FindDead(psw, aroot, &aDeadNew);
+    glm::vec3 posOther;
+    const bool fPos = FPosRemote(posOther);
     std::vector<std::pair<float, std::pair<uint64_t, ALO*>>> asel;
     for (const auto& kr : aroot)
     {
         ALO* pa = kr.second;
-        if (!pa->fInWorld || pa->axf.empty()) continue;
-        const float d = fPos ? glm::distance(glm::vec3(pa->axf[0]->matWorld[3]), posJoin) : 0.0f;
+        if (!pa->fInWorld || pa->axf.empty() || FMirrored(kr.first)) continue;
+        if (!fHost && !(s_iwrecRoster == g_transition.iwrecCur && s_mpRoster.count(kr.first))) continue;   // (not the host's)
+        const float d = fPos ? glm::distance(PosRoot(pa), posOther) : 0.0f;
         if (d > c_sActorRadius) continue;
         asel.push_back({d, kr});
     }
@@ -524,6 +665,24 @@ void SendActors(SW* psw)
     w.Put<uint8_t>(MSG_Actors);
     w.Put<uint32_t>(s_stepLocal);
     w.Put<int32_t>(g_transition.iwrecCur);
+    // the roster (host) and the knocked out
+    if (fHost)
+    {
+        uint16_t c = 0;
+        for (const auto& kr : aroot) c += kr.second->fInWorld && !s_setDead.count(kr.first) ? 1 : 0;
+        w.Put<uint16_t>(c);
+        for (const auto& kr : aroot)
+            if (kr.second->fInWorld && !s_setDead.count(kr.first))
+            {
+                w.Put<uint64_t>(kr.first);
+                w.Put<uint8_t>(s_mptOwnedJoin.count(kr.first) ? 1 : 0);
+            }
+    }
+    else w.Put<uint16_t>(0);
+    w.Put<uint16_t>(uint16_t(std::min<size_t>(s_setDead.size(), 2000)));
+    size_t cDead = 0;
+    for (uint64_t key : s_setDead)
+        if (cDead++ < 2000) w.Put<uint64_t>(key);
     w.Put<uint16_t>(uint16_t(asel.size()));
     int cxfLeft = c_cxfActorsMax;
     for (const auto& s : asel)
@@ -531,11 +690,18 @@ void SendActors(SW* psw)
         w.Put<uint64_t>(s.second.first);
         PutTree(w, psw, s.second.second, cxfLeft);
     }
-    Send(s_ppeer, w, c_chanActors, false);
+    if (!s_ppeer) return;
+    enet_peer_send(s_ppeer, c_chanActors, enet_packet_create(w.ab.data(), w.ab.size(), ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT));
     static uint32_t s_cLogged = 0;
-    if (s_cLogged < 3 && !asel.empty()) { ++s_cLogged; std::printf("co-op: guards message: %zu guards, %zu bytes\n", asel.size(), w.ab.size()); }
+    if (s_cLogged < 3 && !asel.empty())
+    {
+        ++s_cLogged;
+        std::printf("co-op: guards message: %zu guards, %zu bytes (%zu in the roster, %zu the joiner's)\n", asel.size(),
+                    w.ab.size(), aroot.size(), s_mptOwnedJoin.size());
+    }
 }
 
+// a hit by the other player on a guard this game runs
 void OnHit(READER& r)
 {
     const uint64_t key = r.Get<uint64_t>();
@@ -545,14 +711,14 @@ void OnHit(READER& r)
     ctm.pos = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
     ctm.vec = glm::vec3(r.Get<float>(), r.Get<float>(), r.Get<float>());
     ctm.grfAccepted = r.Get<uint32_t>();
-    if (!r.fOk || !g_psw || g_transition.fPending) return;
+    if (!r.fOk || !g_psw || g_transition.fPending || FMirrored(key)) return;
     std::vector<std::pair<uint64_t, ALO*>> aroot;
     CollectGuardRoots(g_psw, aroot);
     for (const auto& kr : aroot)
         if (kr.first == key)
         {
-            // (the sender: the host's own player stands in for the joiner's character; the hit's position and
-            // direction are the joiner's)
+            // (the sender: this game's own player stands in for the other's character; the hit's position and
+            // direction are the other's)
             ctm.ploSender = PloPoCurrent(g_psw);
             ctm.ploReceiver = kr.second;
             ctm.paloAccepted = kr.second;
@@ -562,6 +728,7 @@ void OnHit(READER& r)
             return;
         }
 }
+
 
 // ------------------------------------------------------------ joiner: following the host
 void OnWorld(READER& r)
@@ -619,9 +786,20 @@ void FollowHost(SW* psw)
 
 void OnActors(READER& r)
 {
+    const bool fFromHost = s_opt.mode == COOPMODE_Join;
     ACTORSNAP snap;
     snap.step = r.Get<uint32_t>();
     snap.iwrec = r.Get<int32_t>();
+    const uint16_t cRoster = r.Get<uint16_t>();
+    std::unordered_map<uint64_t, bool> mpRoster;
+    for (int i = 0; i < cRoster && r.fOk; ++i)
+    {
+        const uint64_t key = r.Get<uint64_t>();
+        mpRoster[key] = r.Get<uint8_t>() != 0;
+    }
+    const uint16_t cDead = r.Get<uint16_t>();
+    std::vector<uint64_t> aDead;
+    for (int i = 0; i < cDead && r.fOk; ++i) aDead.push_back(r.Get<uint64_t>());
     const uint16_t c = r.Get<uint16_t>();
     int cxfLeft = c_cxfActorsMax;
     for (int i = 0; i < c && r.fOk; ++i)
@@ -632,20 +810,28 @@ void OnActors(READER& r)
         snap.mpkey.emplace(key, std::move(tree));
     }
     if (!r.fOk) return;
+    if (snap.iwrec != g_transition.iwrecCur) return;
+    if (fFromHost)
+    {
+        s_mpRoster = std::move(mpRoster);
+        s_iwrecRoster = snap.iwrec;
+    }
+    for (uint64_t key : aDead) s_setDead.insert(key);
     snap.tRecv = TNow();
+    if (!fFromHost)
+        for (const auto& kv : snap.mpkey) s_mptPoseJoin[kv.first] = snap.tRecv;
     if (!s_asnap.empty() && snap.step <= s_asnap.back().step) return;
     s_asnap.push_back(std::move(snap));
     while (s_asnap.size() > 12) s_asnap.pop_front();
 }
 
-// the joiner's guards found and frozen (their updates skipped while the host's are shown)
+// this game's guards by key, with their trees
 void BuildMirror(SW* psw)
 {
     s_mirror.serialWorld = psw->serial;
     s_mirror.stepBuilt = s_stepLocal;
     s_mirror.mpkeyRoot.clear();
     s_mirror.mpRootOid.clear();
-    s_mirror.setFrozen.clear();
     s_mirror.mpRootKey.clear();
     std::vector<std::pair<uint64_t, ALO*>> aroot;
     CollectGuardRoots(psw, aroot);
@@ -656,50 +842,59 @@ void BuildMirror(SW* psw)
         std::vector<ALO*> apalo;
         CollectTree(kr.second, apalo);
         auto& mp = s_mirror.mpRootOid[kr.second];
-        for (ALO* pa : apalo)
-        {
-            mp.emplace(pa->oid, pa);
-            s_mirror.setFrozen.insert(pa);
-        }
+        for (ALO* pa : apalo) mp.emplace(pa->oid, pa);
     }
 }
 
+// the guards the other game runs: frozen here, posed as there (hidden when no pose came)
 void StepMirror(SW* psw)
 {
     s_mirror.mpfDrawn.clear();
     s_mirror.amat.clear();
+    s_mirror.setFrozen.clear();
     s_mirror.fActive = false;
-    if (s_opt.mode != COOPMODE_Join || !FConnected() || !psw || g_transition.fPending || s_asnap.empty()) return;
-    const ACTORSNAP& newest = s_asnap.back();
-    if (newest.iwrec != g_transition.iwrecCur || TNow() - newest.tRecv > 1.5) return;   // (another world, or gone quiet)
-    if (s_mirror.serialWorld != psw->serial || s_stepLocal - s_mirror.stepBuilt >= 60) BuildMirror(psw);
+    if (!FConnected() || !psw || g_transition.fPending) return;
+    if (s_opt.mode == COOPMODE_Join && s_iwrecRoster != g_transition.iwrecCur) return;   // (the host's guards not known yet)
+    if (s_mirror.serialWorld != psw->serial || s_stepLocal - s_mirror.stepBuilt >= 30) BuildMirror(psw);
     s_mirror.fActive = true;
-    const double stepNow = StepShown(newest.step, newest.tRecv, c_dstepActors);
-    const ACTORSNAP* pa = &newest;
+    const ACTORSNAP* pa = nullptr;
     const ACTORSNAP* pb = nullptr;
-    for (size_t i = 0; i + 1 < s_asnap.size(); ++i)
-        if (double(s_asnap[i].step) <= stepNow && double(s_asnap[i + 1].step) >= stepNow)
-        {
-            pa = &s_asnap[i];
-            pb = &s_asnap[i + 1];
-            break;
-        }
-    if (pb && pb->iwrec != pa->iwrec) pb = nullptr;
-    const float u = pb ? std::clamp(float((stepNow - double(pa->step)) / std::max(1.0, double(pb->step) - double(pa->step))), 0.0f, 1.0f) : 0.0f;
-    for (const auto& [key, tree] : pa->mpkey)
+    float u = 0.0f;
+    if (!s_asnap.empty() && s_asnap.back().iwrec == g_transition.iwrecCur && TNow() - s_asnap.back().tRecv < 1.0)
     {
-        auto itRoot = s_mirror.mpkeyRoot.find(key);
-        if (itRoot == s_mirror.mpkeyRoot.end()) continue;
+        const ACTORSNAP& newest = s_asnap.back();
+        const double stepNow = StepShown(newest.step, newest.tRecv, c_dstepActors);
+        pa = &newest;
+        for (size_t i = 0; i + 1 < s_asnap.size(); ++i)
+            if (double(s_asnap[i].step) <= stepNow && double(s_asnap[i + 1].step) >= stepNow)
+            {
+                pa = &s_asnap[i];
+                pb = &s_asnap[i + 1];
+                break;
+            }
+        if (pb && pb->iwrec != pa->iwrec) pb = nullptr;
+        u = pb ? std::clamp(float((stepNow - double(pa->step)) / std::max(1.0, double(pb->step) - double(pa->step))), 0.0f, 1.0f) : 0.0f;
+    }
+    for (const auto& [key, palo] : s_mirror.mpkeyRoot)
+    {
+        if (!FMirrored(key)) continue;
+        auto& mpoid = s_mirror.mpRootOid[palo];
+        for (const auto& [oid, pc] : mpoid) s_mirror.setFrozen.insert(pc);
+        const TREEPOSE* pta = nullptr;
+        if (pa && !s_setDead.count(key))
+            if (auto it = pa->mpkey.find(key); it != pa->mpkey.end()) pta = &it->second;
+        if (!pta)
+        {
+            for (const auto& [oid, pc] : mpoid) s_mirror.mpfDrawn[pc] = false;
+            continue;
+        }
         const TREEPOSE* ptb = nullptr;
         if (pb)
             if (auto itb = pb->mpkey.find(key); itb != pb->mpkey.end()) ptb = &itb->second;
-        ApplyTree(tree, ptb, u, s_mirror.mpRootOid[itRoot->second], s_mirror.mpfDrawn, &s_mirror.amat);
+        ApplyTree(*pta, ptb, u, mpoid, s_mirror.mpfDrawn, &s_mirror.amat);
     }
-    // the guards the host did not send (out of range, or out of its world): hidden
-    for (const auto& [key, palo] : s_mirror.mpkeyRoot)
-        if (!pa->mpkey.count(key))
-            for (const auto& [oid, pc] : s_mirror.mpRootOid[palo]) s_mirror.mpfDrawn[pc] = false;
 }
+
 
 // ------------------------------------------------------------ receiving
 void OnHello(ENetPeer* ppeer, READER& r)
@@ -764,8 +959,8 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_State: OnState(r); break;
     case MSG_World: if (fJoin) OnWorld(r); break;
     case MSG_Save: if (fJoin) OnSave(r); break;
-    case MSG_Actors: if (fJoin) OnActors(r); break;
-    case MSG_Hit: if (!fJoin) OnHit(r); break;
+    case MSG_Actors: OnActors(r); break;
+    case MSG_Hit: OnHit(r); break;
     default: break;
     }
 }
@@ -1015,9 +1210,9 @@ void CoopStep(SW* psw)
         {
             SendWorld(false);
             if (s_stepLocal % 30 == 0) SendSave(false);
-            SendActors(psw);
         }
         else FollowHost(psw);
+        SendActors(psw);
     }
     SendState(psw);
     StepRemote(psw);
@@ -1059,11 +1254,11 @@ bool FCoopSkipUpdate(const LO* plo)
 
 bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm)
 {
-    if (s_opt.mode != COOPMODE_Join || !s_mirror.fActive || !palo || !pctm) return false;
+    if (!s_mirror.fActive || !palo || !pctm) return false;
     ALO* proot = palo;
     while (proot->paloParent && FCidDerivedFrom(proot->paloParent->Cid(), 0x38)) proot = proot->paloParent;
     auto it = s_mirror.mpRootKey.find(proot);
-    if (it == s_mirror.mpRootKey.end()) return false;
+    if (it == s_mirror.mpRootKey.end() || !FMirrored(it->second)) return false;   // (this game runs it: a real hit)
     // a frozen guard takes nothing here; only the joiner's own attacks (its character's tree, or what it threw)
     // that would knock a guard about go to the host, at most 4 a second per guard (bumping into one is not a hit)
     const LO* ploPlayer = g_psw ? PloPoCurrent(g_psw) : nullptr;
