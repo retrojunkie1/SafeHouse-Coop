@@ -1228,6 +1228,36 @@ void CoopShutdown()
 
 bool FCoopActive() { return s_opt.mode != COOPMODE_Off; }
 
+// (diagnostic) every 5 s: the guards near either player, as this game sees them
+void DumpGuards(SW* psw)
+{
+    if (!psw || g_transition.fPending) return;
+    std::vector<std::pair<uint64_t, ALO*>> aroot;
+    CollectGuardRoots(psw, aroot);
+    LO* ploMe = PloPoCurrent(psw);
+    const glm::vec3 posMe = ploMe && FCidDerivedFrom(ploMe->Cid(), 0x30) ? PosRoot(static_cast<ALO*>(ploMe)) : glm::vec3(0.0f);
+    glm::vec3 posOther(1e9f);
+    const bool fOther = FPosRemote(posOther);
+    std::printf("co-op guards at step %u: world %d, me %.0f %.0f %.0f, other %s %.0f %.0f %.0f, %zu roots, roster %zu (world %d), snaps %zu\n",
+                s_stepLocal, g_transition.iwrecCur, posMe.x, posMe.y, posMe.z, fOther ? "here" : "away", posOther.x, posOther.y,
+                posOther.z, aroot.size(), s_mpRoster.size(), s_iwrecRoster, s_asnap.size());
+    const ACTORSNAP* psnap = s_asnap.empty() ? nullptr : &s_asnap.back();
+    for (const auto& [key, palo] : aroot)
+    {
+        const glm::vec3 p = PosRoot(palo);
+        const float d = std::min(glm::distance(p, posMe), fOther ? glm::distance(p, posOther) : 1e9f);
+        if (d > 6000.0f) continue;
+        const bool fMir = FMirrored(key);
+        const char* szRoster = s_opt.mode == COOPMODE_Join ? (s_mpRoster.count(key) ? (s_mpRoster[key] ? "roster:join" : "roster:host") : "roster:none")
+                                                           : (s_mptOwnedJoin.count(key) ? "owner:join" : "owner:host");
+        std::printf("  key %016llx oid %d clone %d cid 0x%X at %.0f %.0f %.0f inworld %d active %d %s %s%s%s\n",
+                    (unsigned long long)key, palo->oid, palo->iclone, int(palo->Cid()), p.x, p.y, p.z, int(palo->fInWorld),
+                    int(FLoActive(palo)), szRoster, fMir ? "MIRRORED" : "runs-here", s_setDead.count(key) ? " dead" : "",
+                    fMir && psnap ? (psnap->mpkey.count(key) ? " pose-received" : " no-pose") : "");
+    }
+    std::fflush(stdout);
+}
+
 void CoopStep(SW* psw)
 {
     if (!FCoopActive()) return;
@@ -1247,6 +1277,8 @@ void CoopStep(SW* psw)
     SendState(psw);
     StepRemote(psw);
     StepMirror(psw);
+    if (FConnected() && s_stepLocal % 300 == 0) DumpGuards(psw);
+    if (s_stepLocal % 60 == 0) std::fflush(stdout);
     if (s_phost) enet_host_flush(s_phost);
     // the status in the window's title (twice a second)
     if (g_gl.window && s_stepLocal % 30 == 0)
