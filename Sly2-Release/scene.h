@@ -61,6 +61,8 @@ struct SCENEGLOBSET
     // The damage flash (ALO +0xD0 = RenderGlob's MODEL +0x50, sent as qw8.z; the actors' UpdateDamage 0x1A1358 pulses it
     // while hurt): P_A draws the cel border toward red by it (N06; measured on the reference).
     float gFlash = 0.0f;
+    // (QoL, paint.h) the character repainter's profile (1..6) of the object's tree, 0 none
+    uint8_t ipaint = 0;
     // Drawn over the HUD (RenderGlob 0x168638: the glob set's flag bit 34, ALO +0xD0, option 69 SetSoIgnoreLocked,
     // while no screen object of priority >= 16 is shown, G_GAME +0x3BEC == 0): its kinds 3 / 4 -> 22 (23 faded),
     // 5 / 6 -> 23, 9 -> 24, 10 -> 25, drawn after kind 21 (the screen objects) over a cleared Z (group 10's

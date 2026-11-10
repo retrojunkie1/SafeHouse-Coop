@@ -1,6 +1,7 @@
 // See skipcut.h.
 
 #include "skipcut.h"
+#include "paint.h"
 
 #include "audio.h"
 #include "actor.h"
@@ -371,14 +372,67 @@ void FMovieSkipTest() { s_skip.fMaskCircle = true; }   // (SLY2N_MOVIESKIPAT: wh
 
 // (QoL, po.h: the walkable safe house) its prompt at the bottom right, as the skip hint: Triangle to sit down at the
 // table / to stand up from it
+// (QoL, paint.h) the safe house's wardrobe while open: a panel at the left, its rows (the character's paint slots,
+// then Done), each slot's colour with a swatch
+void DrawWardrobe(const WARDROBEVIEW& v)
+{
+    const FONTBRX* pfont = PfontHud();
+    const FONTBRX* picons = PfontHudIcons();
+    if (!pfont) return;
+    const float depth = 16000000.0f;
+    const glm::vec4 white(200.0f, 200.0f, 200.0f, 0.0f), dim(110.0f, 110.0f, 110.0f, 0.0f), gold(230.0f, 190.0f, 60.0f, 0.0f);
+    auto text = [&](const std::string& t, float x, float y, float sz, const glm::vec4& off) {
+        g_hud.DrawTextBox(*pfont, picons, t, x - 320.0f, (y - 224.0f) * 1.1f, sz, 1.0f, 1.0f, 0.0f, 0.0f, 0, 0, off,
+                          glm::vec4(1.0f), glm::vec4(0.0f), depth + 100.0f, false);
+    };
+    const float x0 = 28.0f, y0 = 70.0f, w = 270.0f, hRow = 30.0f;
+    const int crow = v.cslot + 1;
+    const float h = 70.0f + crow * hRow + 34.0f;
+    g_hud.FillScreenRect(x0, y0, x0 + w, y0 + h, glm::vec4(0, 0, 0, 96), depth / 16777216.0f - 1e-4f);
+    text(std::string("Wardrobe: ") + SzPaintChar(v.ichar), x0 + 12.0f, y0 + 10.0f, 26.0f, gold);
+    for (int r = 0; r < crow; ++r)
+    {
+        const float y = y0 + 52.0f + r * hRow;
+        const bool fSel = r == v.irow;
+        if (fSel) g_hud.FillScreenRect(x0 + 6.0f, y - 3.0f, x0 + w - 6.0f, y + hRow - 5.0f, glm::vec4(255, 255, 255, 28), depth / 16777216.0f - 5e-5f);
+        if (r == v.cslot)
+        {
+            text("Done", x0 + 16.0f, y, 22.0f, fSel ? white : dim);
+            continue;
+        }
+        text(PaintBand(v.ichar, r).szName, x0 + 16.0f, y, 22.0f, fSel ? white : dim);
+        const int ip = v.aipreset[r];
+        const std::string val = ip < 0 ? "Original" : PaintPreset(ip).szName;
+        text(std::string(fSel ? "< " : "") + val + (fSel ? " >" : ""), x0 + 132.0f, y, 22.0f, fSel ? white : dim);
+        // the swatch: the preset's colour (the original: the band's own hue)
+        const float hue = ip < 0 ? PaintBand(v.ichar, r).hue : PaintPreset(ip).hue;
+        const float sat = ip < 0 ? 0.7f : std::clamp(0.75f * PaintPreset(ip).sat, 0.0f, 1.0f);
+        const float vv = ip < 0 ? 0.8f : std::clamp(0.8f * PaintPreset(ip).val, 0.0f, 1.0f);
+        const float hh = hue * 6.0f;
+        const int i = int(hh) % 6;
+        const float f = hh - std::floor(hh), p = vv * (1 - sat), q = vv * (1 - sat * f), t = vv * (1 - sat * (1 - f));
+        glm::vec3 rgb = i == 0 ? glm::vec3(vv, t, p) : i == 1 ? glm::vec3(q, vv, p) : i == 2 ? glm::vec3(p, vv, t)
+                      : i == 3 ? glm::vec3(p, q, vv) : i == 4 ? glm::vec3(t, p, vv) : glm::vec3(vv, p, q);
+        g_hud.FillScreenRect(x0 + w - 34.0f, y + 1.0f, x0 + w - 14.0f, y + 19.0f, glm::vec4(rgb * 255.0f, 128.0f), depth / 16777216.0f - 2e-5f);
+    }
+    const std::string hint = picons ? "&2O&. Done" : "Circle: Done";
+    text(hint, x0 + 16.0f, y0 + h - 30.0f, 18.0f, dim);
+}
+
 void DrawSafeHousePrompt()
 {
+    if (WARDROBEVIEW v; FWardrobeView(&v))
+    {
+        DrawWardrobe(v);
+        return;
+    }
     const int n = NSafeHousePrompt();
     if (!n) return;
     const FONTBRX* pfont = PfontHud();
     const FONTBRX* picons = PfontHudIcons();
     if (!pfont) return;
-    const std::string text = std::string(picons ? (n == 1 ? "&2O&. " : "&2T&. ") : (n == 1 ? "Circle: " : "Triangle: ")) + (n == 1 ? "Sit down" : "Stand up");
+    const char* szAct = n == 1 ? "Sit down" : n == 3 ? "Wardrobe" : "Stand up";
+    const std::string text = std::string(picons ? (n != 2 ? "&2O&. " : "&2T&. ") : (n != 2 ? "Circle: " : "Triangle: ")) + szAct;
     const float size = 24.0f, xRight = 616.0f, yTop = 412.0f, depth = 16000000.0f;
     const float w = DxText(*pfont, picons, text, size);
     const float hText = size * 0.909f;

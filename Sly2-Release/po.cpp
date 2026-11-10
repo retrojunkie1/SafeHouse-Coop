@@ -32,6 +32,8 @@ void PrintRef(const CRef& ref, std::string* ps);  // bif.cpp (debug)
 #include "ref.h"
 #include "savedata.h"
 #include "scpt.h"
+#include "paint.h"
+#include "joy.h"
 #include "hudwidget.h"
 #include "interact.h"
 #include "spliceobj.h"
@@ -145,7 +147,8 @@ struct WALKSH
     bool fBySeat = false;     // standing by it: Triangle sits down (the safe house's menu again)
     int cstepStand = 0;       // steps until it is set standing (placed first: its ground found by the physics)
     bool fPromptSet = false;  // the menu's choice set for the walk (the banner taken off when by no one)
-    bool fSitReq = false;     // the use button pressed by the table (taken before the character's own update)
+    bool fSitReq = false;
+    bool fByWardrobe = false; // by the wardrobe (the use button opens it)     // the use button pressed by the table (taken before the character's own update)
     glm::vec3 posGood{0.0f};  // its last place over the hideout's floor (the deck's open edge held, see below)
     bool fGood = false;
 };
@@ -154,6 +157,145 @@ bool s_fArmed = false;         // (walking in enters the safe house: armed once 
 uint32_t s_serialArmed = 0;     // (the world it was armed in)
 bool s_fSitting = false;       // (the safe house shown again by sitting down: its menu, not the walk)
 WALKSH s_walk;
+
+// (the walkable safe house) the wardrobe: the character repainter (paint.h) at the hideout's inside of its door (where
+// the door's script walks the character in); open: the character held, the pad choosing its slots' colours
+struct WARDROBE
+{
+    bool fOpen = false;
+    int ichar = 0, irow = 0;
+    int aipreset[CPAINTSLOT]{};
+    uint32_t serialPos = 0;
+    bool fPos = false;
+    glm::vec3 pos{0.0f};
+} s_wardrobe;
+
+int CWardrobeSlots(int ichar)
+{
+    int c = 0;
+    while (c < CPAINTSLOT && PaintBand(ichar, c).szName) ++c;
+    return c;
+}
+
+// the slot's preset as the paints have it (-1: the original; a slot with a colour of no preset: its nearest hue's)
+int IPresetOfSlot(const PAINTSLOT& ps)
+{
+    if (!ps.fOn) return -1;
+    int iBest = 0;
+    float dBest = 1e9f;
+    for (int i = 0; i < CPaintPresets(); ++i)
+    {
+        const PAINTPRESET& p = PaintPreset(i);
+        float dh = std::fabs(p.hue - ps.hue);
+        dh = std::min(dh, 1.0f - dh);
+        const float d = dh + std::fabs(p.sat - ps.sat) + std::fabs(p.val - ps.val);
+        if (d < dBest) dBest = d, iBest = i;
+    }
+    return iBest;
+}
+
+// The wardrobe's place: the door's (a use by the safe house with a script) inside point, the nearest to the safe house
+// of the objects its script walks the character to
+bool FWardrobePos(LO* plosh, glm::vec3* ppos)
+{
+    if (!g_psw || !plosh) return false;
+    if (s_wardrobe.serialPos != g_psw->serial)
+    {
+        s_wardrobe.serialPos = g_psw->serial;
+        s_wardrobe.fPos = false;
+        const glm::vec3 posSh = PosLoWorld(plosh);
+        float dBest = 1e9f;
+        for (LO* puse : AploOfClass(g_psw, 0x23))
+        {
+            if (glm::length(glm::vec2(PosLoWorld(puse) - posSh)) > 1100.0f) continue;
+            LO* pscpt = PloInteractOidField(puse, 0x114);
+            int aoid[8];
+            const int c = pscpt ? CScptWalkTargets(pscpt, aoid, 8) : 0;
+            for (int i = 0; i < c; ++i)
+                if (LO* pt = PloFindSwObjectByOid(g_psw, aoid[i]))
+                {
+                    const float d = glm::length(glm::vec2(PosLoWorld(pt) - posSh));
+                    if (d < dBest) dBest = d, s_wardrobe.pos = PosLoWorld(pt), s_wardrobe.fPos = true;
+                }
+        }
+        // (the room's side toward the door, within the walk's reach of the table: the door's inside point itself is
+        // past where the walk ends)
+        if (s_wardrobe.fPos)
+        {
+            const glm::vec3 posIn = s_wardrobe.pos;
+            s_wardrobe.pos = posSh + (posIn - posSh) * 0.45f;
+            s_wardrobe.pos.z = posIn.z;
+        }
+        if (s_wardrobe.fPos)
+            std::printf("safe house: wardrobe at %.0f %.0f %.0f\n", s_wardrobe.pos.x, s_wardrobe.pos.y, s_wardrobe.pos.z);
+    }
+    if (s_wardrobe.fPos) *ppos = s_wardrobe.pos;
+    return s_wardrobe.fPos;
+}
+
+void OpenWardrobe()
+{
+    s_wardrobe.fOpen = true;
+    s_wardrobe.ichar = std::max(0, IPaintCharOfOid(s_walk.ploActor ? s_walk.ploActor->oid : 7));
+    s_wardrobe.irow = 0;
+    for (int s = 0; s < CPAINTSLOT; ++s) s_wardrobe.aipreset[s] = IPresetOfSlot(LocalPaint(s_wardrobe.ichar).aslot[s]);
+    std::printf("safe house: wardrobe opened (%s)\n", SzPaintChar(s_wardrobe.ichar));
+}
+
+void CloseWardrobe()
+{
+    s_wardrobe.fOpen = false;
+    SavePaints();
+    MarkLocalPaintChanged();
+    std::printf("safe house: wardrobe closed\n");
+}
+
+// the wardrobe's pad (the game's layout): up / down a row, left / right a colour, Circle / Cross on "Done" or
+// Triangle closes
+void WardrobeInput(PADCTL* ppc)
+{
+    auto press = [&](uint32_t btn) {
+        const uint32_t grf = ((btn & 0xFF) << 8) | (btn >> 8);
+        if (!GrfPadctlPressedWithin(ppc, grf, 0.1f)) return false;
+        ForgetPadctlPresses(ppc, grf);
+        return true;
+    };
+    const int cslot = CWardrobeSlots(s_wardrobe.ichar);
+    const int crow = cslot + 1;
+    if (press(BTN_Up)) s_wardrobe.irow = (s_wardrobe.irow + crow - 1) % crow;
+    if (press(BTN_Down)) s_wardrobe.irow = (s_wardrobe.irow + 1) % crow;
+    int d = 0;
+    if (press(BTN_Left)) d = -1;
+    if (press(BTN_Right)) d = 1;
+    // (the stick too, once per push)
+    static bool s_fStick = false;
+    if (std::fabs(ppc->x) > 0.6f || std::fabs(ppc->y) > 0.6f)
+    {
+        if (!s_fStick)
+        {
+            if (std::fabs(ppc->x) > std::fabs(ppc->y)) d = ppc->x > 0 ? 1 : -1;
+            else s_wardrobe.irow = (s_wardrobe.irow + (ppc->y > 0 ? crow - 1 : 1)) % crow;
+        }
+        s_fStick = true;
+    }
+    else s_fStick = false;
+    if (d && s_wardrobe.irow < cslot)
+    {
+        const int cpre = CPaintPresets();
+        int& ip = s_wardrobe.aipreset[s_wardrobe.irow];
+        ip = (ip + 1 + d + (cpre + 1)) % (cpre + 1) - 1;   // (-1 .. cpre-1: the original first)
+        PAINTSLOT& ps = LocalPaint(s_wardrobe.ichar).aslot[s_wardrobe.irow];
+        if (ip < 0) ps.fOn = false;
+        else
+        {
+            const PAINTPRESET& p = PaintPreset(ip);
+            ps = {p.hue, p.sat, p.val, true};
+        }
+        MarkLocalPaintChanged();   // (live: the other player sees it as it is chosen)
+    }
+    const bool fDone = s_wardrobe.irow == cslot && (press(BTN_Circle) || press(BTN_Cross));
+    if (press(BTN_Triangle) || fDone || press(BTN_Circle)) CloseWardrobe();
+}
 bool s_fWalkSwitch = false;   // (the character taking the pad: the safe house is not left)
 
 // orig 0x001D77D0: the safe house's state machine to the next allowed state (+0x220 / +0x224: option 1339) from
@@ -439,6 +581,27 @@ void UpdateAllPadctls()
     for (auto& ppc : s_lpadctl) UpdatePadctl(ppc.get());
     // (the walkable safe house: the use button by the table sits down; taken here, before the character's update
     // would use it (and consume it) for its own interactions)
+    // (the wardrobe: open, its pad; the character held)
+    if (s_wardrobe.fOpen)
+    {
+        PODATA* ppd = s_walk.ploActor ? PpodataFromLo(s_walk.ploActor) : nullptr;
+        if (s_walk.phase != 2 || !ppd || !ppd->ppadctl || PloPoCurrent(g_psw) != s_walk.ploActor) CloseWardrobe();
+        else
+        {
+            WardrobeInput(ppd->ppadctl);
+            ClearPadctl(ppd->ppadctl);
+        }
+        return;
+    }
+    if (s_walk.phase == 2 && s_walk.fByWardrobe && s_walk.ploActor && PloPoCurrent(g_psw) == s_walk.ploActor)
+        if (PODATA* ppd = PpodataFromLo(s_walk.ploActor); ppd && ppd->ppadctl &&
+                                                          GrfPadctlPressedWithin(ppd->ppadctl, kgrfPadCircle, 0.1f))
+        {
+            ForgetPadctlPresses(ppd->ppadctl, kgrfPadCircle);
+            OpenWardrobe();
+            ClearPadctl(ppd->ppadctl);
+            return;
+        }
     if (s_walk.phase == 2 && s_walk.fBySeat && s_walk.ploActor && PloPoCurrent(g_psw) == s_walk.ploActor)
         if (PODATA* ppd = PpodataFromLo(s_walk.ploActor); ppd && ppd->ppadctl &&
                                                           GrfPadctlPressedWithin(ppd->ppadctl, kgrfPadCircle, 0.1f))
@@ -695,7 +858,9 @@ void StandSafeHouseActor(LO* pa)
 int NSafeHousePromptImpl()
 {
     if (!s_walk.plosh || FShopShown() || FMenuShown()) return 0;
+    if (s_wardrobe.fOpen) return 0;
     if (s_walk.phase == 2 && s_walk.fBySeat) return 1;
+    if (s_walk.phase == 2 && s_walk.fByWardrobe) return 3;
     if (s_walk.phase == 4) return 2;
     return 0;
 }
@@ -936,6 +1101,11 @@ void UpdateSafeHouse(LO* plo)
         // (the table: Triangle (the use button) by it, or by the character's own chair, sits down)
         s_walk.fBySeat = glm::length(glm::vec2(PosLoWorld(plo) - posMe)) < 230.0f ||
                          (s_walk.posSeat != glm::vec3(0.0f) && glm::length(glm::vec2(s_walk.posSeat - posMe)) < 120.0f);
+        {
+            glm::vec3 posWr;
+            s_walk.fByWardrobe = !s_walk.fBySeat && FWardrobePos(plo, &posWr) &&
+                                 glm::length(glm::vec2(posWr - posMe)) < 140.0f && std::fabs(posWr.z - posMe.z) < 200.0f;
+        }
         // (the use button (Interact, Circle by default) is the walking character's: read from its controller)
         const bool fSitReq = s_walk.fSitReq;
         s_walk.fSitReq = false;
@@ -1111,3 +1281,12 @@ int OidSafeHouseShown(const LO* plo, std::vector<OID>* paoidAllowed)
 
 int NSafeHousePrompt() { return NSafeHousePromptImpl(); }
 bool FSafeHouseDoorUse(LO* puse, ACTOR* pa) { return FSafeHouseDoorUseImpl(puse, pa); }
+bool FWardrobeView(WARDROBEVIEW* pv)
+{
+    if (!s_wardrobe.fOpen) return false;
+    pv->ichar = s_wardrobe.ichar;
+    pv->irow = s_wardrobe.irow;
+    pv->cslot = CWardrobeSlots(s_wardrobe.ichar);
+    for (int s = 0; s < 4; ++s) pv->aipreset[s] = s_wardrobe.aipreset[s];
+    return true;
+}

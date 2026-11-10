@@ -8,6 +8,7 @@
 #define vUv gsUv
 #define vFog gsFog
 #define vTexh gsTexh
+#define vPaint gsPaint
 #endif
 
 layout (location = 0) in vec3 aPos;
@@ -54,6 +55,7 @@ uniform vec3 dirCamera;     // the camera's view direction (VU const 6)
 noperspective out vec4 vColor;   // (the GS interpolates RGBA and F affinely in screen space; only STQ is perspective)
 out vec2 vUv;
 noperspective out float vFog;
+flat out uint vPaint;     // (paint.h) the character repainter's profile, 0 none
 
 void main()
 {
@@ -62,6 +64,7 @@ void main()
     vTexh = atexh[aDraw];
 #endif
     REC rec = arec[floatBitsToUint(d.w)];
+    vPaint = rec.bone.w;
     vec4 fogParams = rec.fog;
     vec4 posWorld;
     if (rec.bone.y != 0u)

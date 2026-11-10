@@ -15,6 +15,8 @@ layout (triangle_strip, max_vertices = 4) out;
 noperspective in vec4 gsColor[];
 in vec2 gsUv[];
 noperspective in float gsFog[];
+flat in uint gsPaint[];
+flat out uint vPaint;
 #ifdef BINDLESS
 flat in uvec2 gsTexh[];
 flat out uvec2 vTexh;
@@ -30,6 +32,7 @@ void EmitAt(int i, int j, float t)
     vColor = mix(gsColor[i], gsColor[j], t);
     vUv = mix(gsUv[i], gsUv[j], t);
     vFog = mix(gsFog[i], gsFog[j], t);
+    vPaint = gsPaint[0];
 #ifdef BINDLESS
     vTexh = gsTexh[0];
 #endif

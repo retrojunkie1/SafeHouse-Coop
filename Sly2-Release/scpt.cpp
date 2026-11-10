@@ -2452,6 +2452,16 @@ int CScptSmaCommands(LO* pscpt, int (*an)[3], int cMax)
     return c;
 }
 
+int CScptWalkTargets(LO* pscpt, int* aoid, int cMax)
+{
+    SCPT* ps = pscpt ? PscptOf(pscpt) : nullptr;
+    if (!ps) return 0;
+    int c = 0;
+    for (SCPTCMD& cmd : ps->acmd)
+        if (cmd.kind == 0x24 && c < cMax) aoid[c++] = cmd.N(0x10);
+    return c;
+}
+
 void StartScpt(LO* pscpt, LO* ploStarter)
 {
     LO* plo = pscpt;

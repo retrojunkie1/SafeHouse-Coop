@@ -19,8 +19,47 @@ flat in uvec2 vTexh;
 noperspective in vec4 vColor;
 in vec2 vUv;
 noperspective in float vFog;
+flat in uint vPaint;
+// (paint.h) the character repainter: per profile (vPaint - 1) and slot two vec4s: {band hue, half width, least
+// saturation, on}, {new hue, saturation scale, brightness scale, 0}
+uniform vec4 paint[48];
 
 out vec4 FragColor;
+
+vec3 RgbToHsv(vec3 c)
+{
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 HsvToRgb(vec3 c)
+{
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+// the slots' bands recoloured: the hue moved by (new - band centre), the saturation and brightness scaled
+vec3 Repaint(vec3 rgb, uint ip)
+{
+    vec3 hsv = RgbToHsv(rgb);
+    vec3 outc = rgb;
+    for (int s = 0; s < 4; ++s)
+    {
+        vec4 b = paint[int(ip - 1u) * 8 + s * 2];
+        if (b.w == 0.0) continue;
+        vec4 t = paint[int(ip - 1u) * 8 + s * 2 + 1];
+        float dh = abs(hsv.x - b.x);
+        dh = min(dh, 1.0 - dh);
+        float w = (1.0 - smoothstep(b.y * 0.7, b.y, dh)) * smoothstep(b.z * 0.5, b.z, hsv.y);
+        if (w <= 0.0) continue;
+        vec3 n = vec3(fract(hsv.x + t.x - b.x + 1.0), clamp(hsv.y * t.y, 0.0, 1.0), clamp(hsv.z * t.z, 0.0, 1.0));
+        outc = mix(outc, HsvToRgb(n), w);
+    }
+    return outc;
+}
 
 bool AlphaPasses(float a)
 {
@@ -49,6 +88,8 @@ void main()
 #else
         vec4 t = texture(tex, vUv) * 255.0;
 #endif
+        // (the repainter recolours the texel before the lighting: the band is the texture's own colour)
+        if (vPaint != 0u) t.rgb = Repaint(t.rgb / 255.0, vPaint) * 255.0;
         c = floor(t * vColor / 128.0);
     }
     c = clamp(c, 0.0, 255.0);

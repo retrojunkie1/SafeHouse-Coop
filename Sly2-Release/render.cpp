@@ -1,6 +1,8 @@
 // See render.h.
 
 #include "texmod.h"
+#include "paint.h"
+#include <set>
 #include "render.h"
 #include "simdmat.h"
 #include "drawdist.h"
@@ -149,6 +151,7 @@ void ForgetTexHandles(const std::vector<GLuint>& atex)
     ++s_genHandle;
 }
 
+std::unordered_map<GLuint, std::string> s_mptexName;   // (debug SLY2N_PAINTTEX: the characters' textures by name)
 GLuint TexFromSel(const TEXSEL& sel)
 {
     InitCommonOnce();
@@ -179,6 +182,8 @@ GLuint TexFromSel(const TEXSEL& sel)
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, sel.pbmp->dx, sel.pbmp->dy, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
         ++g_renderstats.ctexture;
+        if (static const bool s_f = std::getenv("SLY2N_PAINTTEX") != nullptr; s_f)
+            s_mptexName[tex] = SzTextureModName(rgba, sel.pbmp->dx, sel.pbmp->dy);
     }
     else
     {
@@ -451,7 +456,7 @@ struct DRAWREC
 struct UNIFORMS
 {
     GLint matWorldToClip, icolor, rgbaConst, posCamera, dirCamera;
-    GLint tex, fTextured, ate, atst, aref, afailMode, fogColor, fFogBlack, fDate, texDate;
+    GLint tex, fTextured, ate, atst, aref, afailMode, fogColor, fFogBlack, fDate, texDate, paint;
 } s_u;
 struct CELUNIFORMS { GLint matWorldToClip, matModel, halfWidthNdc, edgeBase, celRgba, cbone, iboneFirst; } s_uc;
 
@@ -1553,6 +1558,7 @@ void BuildSceneGpu(SCENE& scene)
     s_u.aref = glGlobShader.Loc("aref");
     s_u.afailMode = glGlobShader.Loc("afailMode");
     s_u.fogColor = glGlobShader.Loc("fogColor");
+    s_u.paint = glGlobShader.Loc("paint");
     s_u.fFogBlack = glGlobShader.Loc("fFogBlack");
     s_u.fDate = glGlobShader.Loc("fDate");
     s_u.texDate = glGlobShader.Loc("texDate");
@@ -2336,7 +2342,8 @@ void RenderPass(const SCENE& scene, const PASSVIEW& pv, const RENDEROPTS& opts)
             const float uFog = glob.uFog == std::numeric_limits<float>::max() ? 1.0f : glob.uFog;
             s_arecgpu.push_back({*rec.pmat, glm::vec4(opts.sFogNear, opts.sFogFar / std::max(opts.sFogNear, 1.0f),
                                                       opts.uFogMax * uFog, opts.fFog ? 1.0f : 0.0f),
-                                 glm::uvec4(rec.iboneFirst, rec.pamatBone ? uint32_t(rec.pamatBone->size()) : 0u, uint32_t(pglDraw->baseVertex), 0u)});
+                                 glm::uvec4(rec.iboneFirst, rec.pamatBone ? uint32_t(rec.pamatBone->size()) : 0u, uint32_t(pglDraw->baseVertex),
+                                            rec.psgs ? uint32_t(rec.psgs->ipaint) : 0u)});
             s_arecgpu.back().warp = warpOf(geom);
             // orig: P_G 638 (0x16A000 SPECPARAMS): the view-angle alpha. Unlit groups only: a lit group's gain scales its
             // normals' brightness (w) for the lighting (522) instead (TODO(render): not modelled)
@@ -2393,6 +2400,14 @@ void RenderPass(const SCENE& scene, const PASSVIEW& pv, const RENDEROPTS& opts)
                 for (const PASSCMD& pc : SubgpuOf(sub, pglDraw->vao, fCull).apasscmd)
                 {
                     base.istate = fFbaPass && (rec.kind == 4 || rec.kind == 6) ? IstateFba(pc.istate) : pc.istate;
+                    if (static const bool s_f = std::getenv("SLY2N_PAINTTEX") != nullptr; s_f && rec.psgs && rec.psgs->ipaint)
+                    {
+                        static std::set<std::pair<int, GLuint>> s_seen;
+                        const GLuint tex = s_astate[base.istate].tex;
+                        if (s_seen.emplace(rec.psgs->ipaint, tex).second)
+                            std::printf("painttex profile %d oid %d tex %s\n", rec.psgs->ipaint, rec.psgs->oid,
+                                        s_mptexName.count(tex) ? s_mptexName[tex].c_str() : "?");
+                    }
                     base.order = pc.order;
                     // (bindless: each pass draw its own draw entry, for its texture handle: s_atexh)
                     if (g_fGlobBindless)
@@ -2557,6 +2572,12 @@ void RenderPass(const SCENE& scene, const PASSVIEW& pv, const RENDEROPTS& opts)
         glUniform1i(s_u.texDate, 1);
         glUniform1i(s_u.fDate, 0);
         glUniform4fv(s_u.fogColor, 1, glm::value_ptr(Vec4FromRgba(opts.rgbaFog, 1.0f / 255.0f)));
+        if (s_u.paint >= 0)
+        {
+            static float s_apaint[CPAINTVEC * 4];
+            FillPaintUniforms(s_apaint);
+            glUniform4fv(s_u.paint, CPAINTVEC, s_apaint);
+        }
         fGlobProgram = true;
         sc.fValid = false;
     };

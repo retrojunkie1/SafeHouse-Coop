@@ -74,7 +74,15 @@ int UnlockSafeHouseCharacters(SW* psw);   // debug (F6): every character selecta
 
 // (QoL, the walkable safe house) the prompt to draw (1: sit down, 2: stand up, 0: none); the safe house's own door
 // not offered (it is walked through)
-int NSafeHousePrompt();
+int NSafeHousePrompt();   // (3: the wardrobe)
+// (the walkable safe house) its wardrobe (paint.h) while open: the character, the selected row (the slots, then
+// "Done"), each slot's preset (-1 the original)
+struct WARDROBEVIEW
+{
+    int ichar = 0, irow = 0, cslot = 0;
+    int aipreset[4]{};
+};
+bool FWardrobeView(WARDROBEVIEW* pv);
 struct ACTOR;
 // (the walkable safe house) its door used: opened (or closed) where it stands, walked through (its own use is a
 // fade into the menu); true: handled

@@ -1,4 +1,5 @@
 #include "scenesw.h"
+#include "paint.h"
 #include "simdmat.h"
 #include "drawdist.h"
 #include "display.h"
@@ -96,6 +97,7 @@ void PlaceGlobset(ALO* palo, SCENEGLOBSET& sgs)
     }
     // the draw alphas (0x1F3C10: gFade, gFade; 0x1425B0: gFade x +0x10D4, gFade x +0x10D8)
     sgs.gAlpha = sgs.gAlpha2 = palo->gFade;
+    sgs.ipaint = IPaintProfileOfAlo(palo);
     if (FIsLoDerivedFrom(palo, 0x34))   // (PactorFromLo would make a missing actor: only an existing one)
         if (const ACTOR* pa = dynamic_cast<const ACTOR*>(PstepFromLo(palo)))
         {

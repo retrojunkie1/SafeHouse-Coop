@@ -29,6 +29,7 @@
 #include "task.h"
 #include "transition.h"
 #include "sly2_version.h"
+#include "paint.h"
 
 #include <enet/enet.h>
 #include <GLFW/glfw3.h>
@@ -54,7 +55,7 @@ namespace
 // ------------------------------------------------------------ the wire format
 // Little-endian, packed by hand (both ends are x86-64 / ARM64 builds of this file).
 constexpr uint32_t c_magic = 0x534C5932;       // "SLY2"
-constexpr uint16_t c_protocol = 14;              // 5: a guard after a player stays in that player's game
+constexpr uint16_t c_protocol = 15;              // 5: a guard after a player stays in that player's game
 constexpr uint8_t c_chanReliable = 0, c_chanState = 1, c_chanActors = 2;
 constexpr size_t c_cchan = 3;
 constexpr size_t c_cpeerMax = 1;                // one other player
@@ -77,6 +78,7 @@ enum MSG : uint8_t
     MSG_Pad = 10,       // reliable, either way: a switch / bell / plate turned on or off in the sender's game
     MSG_TaskRestart = 11, // reliable, either way: the job restarted ("try again") in the sender's game
     MSG_Scpt = 12,      // reliable, host -> joiner: a script started in the host's game (cutscene, failure screen)
+    MSG_Paint = 13,     // reliable, either way: the sender's character paints (paint.h: per character, per slot)
     MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
 
@@ -1133,6 +1135,7 @@ void StepMirror(SW* psw)
 
 
 // ------------------------------------------------------------ receiving
+void SendPaints();
 void OnHello(ENetPeer* ppeer, READER& r)
 {
     const uint32_t magic = r.Get<uint32_t>();
@@ -1158,6 +1161,8 @@ void OnHello(ENetPeer* ppeer, READER& r)
     s_hashSaveSent = 0;
     s_fHaveSaveHost = false;
     std::printf("co-op: %s connected\n", s_nameRemote.c_str());
+    ClearRemotePaints();
+    SendPaints();
     if (s_opt.mode == COOPMODE_Host) SendWorld(true);
 }
 
@@ -1178,6 +1183,34 @@ void OnState(READER& r)
     if (!s_aposeRemote.empty() && pose.step <= s_aposeRemote.back().step) return;
     s_aposeRemote.push_back(std::move(pose));
     while (s_aposeRemote.size() > 16) s_aposeRemote.pop_front();
+}
+
+// (the character repainter, paint.h) the local paints sent; the other player's received
+void SendPaints()
+{
+    if (!FConnected()) return;
+    WRITER w;
+    w.Put<uint8_t>(MSG_Paint);
+    for (int c = 0; c < CPAINTCHAR; ++c)
+        for (const PAINTSLOT& ps : LocalPaint(c).aslot)
+            w.Put<float>(ps.hue), w.Put<float>(ps.sat), w.Put<float>(ps.val), w.Put<uint8_t>(ps.fOn ? 1 : 0);
+    Send(s_ppeer, w, c_chanReliable, true);
+}
+
+void OnPaint(READER& r)
+{
+    for (int c = 0; c < CPAINTCHAR; ++c)
+    {
+        CHARPAINT cp;
+        for (PAINTSLOT& ps : cp.aslot)
+        {
+            ps.hue = r.Get<float>(), ps.sat = r.Get<float>(), ps.val = r.Get<float>();
+            ps.fOn = r.Get<uint8_t>() != 0;
+        }
+        if (!r.fOk) return;
+        SetRemotePaint(c, cp);
+    }
+    std::printf("co-op: %s's character paints received\n", s_nameRemote.c_str());
 }
 
 void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
@@ -1206,6 +1239,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_Pad: OnPad(r); break;
     case MSG_Scpt: if (fJoin) OnScpt(r); break;
     case MSG_TaskRestart: OnTaskRestart(r); break;
+    case MSG_Paint: OnPaint(r); break;
     default: break;
     }
 }
@@ -1252,6 +1286,7 @@ void Service()
                 s_ppeer = nullptr;
                 s_fHelloOk = false;
                 s_aposeRemote.clear();
+                ClearRemotePaints();
                 ResetRemote();
                 ResetMirror();
             }
@@ -1546,6 +1581,7 @@ void ProbeGeometry(SW* psw)
 
 void CoopStep(SW* psw)
 {
+    if (FTakeLocalPaintChanged()) SendPaints();
     if (psw && std::getenv("SLY2N_PROBE")) ProbeGeometry(psw);
     // (PC debug, SLY2N_REMOVEOIDS="8,9@t": those objects out of the world once, at game time t)
     if (static const char* s_szR = std::getenv("SLY2N_REMOVEOIDS"); s_szR && psw)
@@ -1837,6 +1873,8 @@ bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm)
     Send(s_ppeer, w, c_chanReliable, true);
     return true;
 }
+
+bool FCoopRemoteRoot(const ALO* palo) { return palo && palo == s_remote.proot; }
 
 void CoopAppendSceneAlos(std::vector<ALO*>& apalo)
 {
