@@ -1530,14 +1530,22 @@ void CoopOnWorldStarted(SW*)
 void CoopAfterWorlds()
 {
     if (!s_mirror.fActive) return;
+    // (each record marked moved (its stamp: the hit shapes' world geometry is refreshed from it), and each body's
+    // bounds refreshed: a frozen copy's shapes otherwise stay where it last ran itself, and nothing can hit it)
+    static int32_t s_nStamp = 0x60000000;
+    std::unordered_set<ALO*> setpalo;
     for (const auto& [pxf, m] : s_mirror.amat)
     {
         pxf->matWorld = m;
+        pxf->nStamp = ++s_nStamp;
+        if (pxf->palo) setpalo.insert(pxf->palo);
         // a guard's root record placed in the world (not relative to another): its local is the world, so its body
         // (collision, activation) stands where the host's is, not where it froze
         if (pxf->palo && !pxf->palo->paloParent && !pxf->pxfRef && !pxf->palo->axf.empty() && pxf->palo->axf[0].get() == pxf)
             pxf->mat = m;
     }
+    for (ALO* palo : setpalo)
+        if (OXA* poxa = Poxa(palo); poxa && poxa->pso == palo && palo->fInWorld) UpdateAloBounds(palo);
 }
 
 bool FCoopActivationPos(glm::vec3& pos)
