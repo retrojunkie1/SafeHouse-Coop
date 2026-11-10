@@ -1656,7 +1656,7 @@ void CoopStep(SW* psw)
                         }
                         std::fprintf(pf, " groups %zu skinned %zu bones", pa->pglobset->aglob.size(), cskin);
                         for (int o : setBone) std::fprintf(pf, " %d", o);
-                        if (std::getenv("SLY2N_GROUPREPORT") && (pa == apalo[0] || pa->oid == 316))
+                        if (std::getenv("SLY2N_GROUPREPORT"))
                             for (size_t i = 0; i < pa->pglobset->aglob.size(); ++i)
                             {
                                 const GLOB& g = pa->pglobset->aglob[i];

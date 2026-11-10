@@ -174,24 +174,22 @@ characters=all
 
 
 def cane_golden_hook(out):
-    """Your sheet's first cane: a turned wooden shaft, brass collars and a long golden hook."""
+    """Your sheet's first cane: a turned wooden shaft, brass collars and a long golden hook. In the cane's own frame,
+    as Sly's: the shaft along X from the butt (-40) to the hook's root (54), the hook curling in +Y out to x 124."""
     m = Mesh()
     m.material("wood", (0.62, 0.34, 0.14))
     m.material("gold", (0.92, 0.76, 0.18))
-    L = 95.0
-    m.cylinder("wood", (-40, 0, 0), (L - 40, 0, 0), 1.6, n=10)
-    m.cylinder("gold", (-42, 0, 0), (-40, 0, 0), 1.9, n=10)
-    for x in (L - 44, L - 40.5):
-        m.cylinder("gold", (x, 0, 0), (x + 2.5, 0, 0), 2.2, n=10)
-    x0 = L - 38
-    # the hook: a blade sweeping up and back, its point turned down
-    pts = [(x0, 0, 0), (x0 + 8, 0, 1.5), (x0 + 16, 0, 4.5), (x0 + 22, 0, 9), (x0 + 24, 0, 14), (x0 + 21, 0, 19),
-           (x0 + 15, 0, 21), (x0 + 9, 0, 19.5)]
-    for i in range(len(pts) - 1):
-        r0 = 2.2 - 1.6 * i / (len(pts) - 1)
-        r1 = 2.2 - 1.6 * (i + 1) / (len(pts) - 1)
-        m.cylinder("gold", pts[i], pts[i + 1], r0, r1, n=8)
-    m.cylinder("gold", pts[-1], (x0 + 5, 0, 15.5), 0.6, 0.1, n=8)
+    m.cylinder("wood", (-40, 0, 0), (54, 0, 0), 1.7, n=10)
+    m.cylinder("gold", (-43, 0, 0), (-40, 0, 0), 2.0, n=10)
+    for x in (46, 50.5):
+        m.cylinder("gold", (x, 0, 0), (x + 2.8, 0, 0), 2.4, n=10)
+    # the hook: a blade sweeping forward and up, curling back to its point
+    pts = [(54, 0), (70, 1.5), (88, 5), (104, 11), (116, 19), (121, 27), (115, 33), (104, 32)]
+    for k in range(len(pts) - 1):
+        r0 = 2.6 - 1.8 * k / (len(pts) - 1)
+        r1 = 2.6 - 1.8 * (k + 1) / (len(pts) - 1)
+        m.cylinder("gold", (pts[k][0], pts[k][1], 0), (pts[k + 1][0], pts[k + 1][1], 0), r0, r1, n=8)
+    m.cylinder("gold", (104, 32, 0), (97, 26, 0), 0.8, 0.1, n=8)
     item(out, "cane_golden_hook", """
 name=Golden hook cane
 slot=hand
@@ -201,21 +199,22 @@ hides=cane
 
 
 def cane_zigzag(out):
-    """Your sheet's fourth cane: a grey zigzag hook, a dark grip, a wooden butt with a brass tip."""
+    """Your sheet's fourth cane: a grey zigzag hook, a dark grip, a wooden butt with a brass tip (the cane's frame:
+    the shaft along X, the hook in +Y)."""
     m = Mesh()
     m.material("steel", (0.42, 0.43, 0.46))
     m.material("grip", (0.22, 0.22, 0.24))
     m.material("wood", (0.66, 0.36, 0.14))
     m.material("brass", (0.86, 0.72, 0.30))
-    m.cylinder("wood", (-42, 0, 0), (-22, 0, 0), 1.3, n=8)
-    m.cylinder("brass", (-46, 0, 0), (-42, 0, 0), 0.3, 1.3, n=8)
-    m.cylinder("grip", (-22, 0, 0), (-12, 0, 0), 3.2, 3.2, n=10)
-    m.cylinder("steel", (-12, 0, 0), (36, 0, 0), 1.6, n=8)
-    # the zigzag: up, back down, then the long point
-    zz = [(36, 0, 0), (44, 0, 10), (36, 0, 14), (52, 0, 24)]
+    m.cylinder("brass", (-46, 0, 0), (-42, 0, 0), 0.3, 1.4, n=8)
+    m.cylinder("wood", (-42, 0, 0), (-22, 0, 0), 1.4, n=8)
+    m.cylinder("grip", (-22, 0, 0), (-10, 0, 0), 3.4, 3.4, n=10)
+    m.cylinder("steel", (-10, 0, 0), (54, 0, 0), 2.1, n=8)
+    # the zigzag: up, back, then the long point
+    zz = [(54, 0), (70, 18), (60, 23), (112, 31)]
     for a, b in zip(zz, zz[1:]):
-        m.cylinder("steel", a, b, 1.5, 1.3, n=8)
-    m.cylinder("steel", zz[-1], (40, 0, 26), 1.2, 0.1, n=8)
+        m.cylinder("steel", (a[0], a[1], 0), (b[0], b[1], 0), 2.2, 1.9, n=8)
+    m.cylinder("steel", (112, 31, 0), (121, 28, 0), 1.9, 0.1, n=8)
     item(out, "cane_zigzag", """
 name=Zigzag cane
 slot=hand

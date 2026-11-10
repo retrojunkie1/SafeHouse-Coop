@@ -447,7 +447,10 @@ bool FCosmeticHidesGlob(const ALO* palo, size_t iglob)
     const CHARRIG& rig = s_arig[ichar];
     if (palo != proot)
     {
-        if (palo->oid != rig.oidCane) return false;
+        // (the cane: its shaft 316, its head 317 under it, and its other copy 318 with a head of its own)
+        const bool fCane = rig.oidCane >= 0 && (palo->oid == rig.oidCane || palo->oid == rig.oidCane + 1 || palo->oid == rig.oidCane + 2 ||
+                                                (palo->paloParent && palo->paloParent->oid == rig.oidCane));
+        if (!fCane) return false;
         const ITEM* p = PitemOf(StrEquippedFor(ichar, fRemote, COSSLOT_Hand));
         return p && p->fHidesCane;
     }
