@@ -33,6 +33,7 @@ void PrintRef(const CRef& ref, std::string* ps);  // bif.cpp (debug)
 #include "savedata.h"
 #include "scpt.h"
 #include "paint.h"
+#include "cosmetic.h"
 #include "joy.h"
 #include "hudwidget.h"
 #include "interact.h"
@@ -170,6 +171,15 @@ struct WARDROBE
     glm::vec3 pos{0.0f};
 } s_wardrobe;
 
+// the item slots the character has items for (the wardrobe's rows after the paint's)
+std::vector<int> AislotWardrobeCos(int ichar)
+{
+    std::vector<int> a;
+    for (int s = 0; s < COSSLOT_Max; ++s)
+        if (!AstrCosmetics(ichar, s).empty()) a.push_back(s);
+    return a;
+}
+
 int CWardrobeSlots(int ichar)
 {
     int c = 0;
@@ -247,6 +257,7 @@ void CloseWardrobe()
 {
     s_wardrobe.fOpen = false;
     SavePaints();
+    SaveCosmetics();
     MarkLocalPaintChanged();
     std::printf("safe house: wardrobe closed\n");
 }
@@ -261,7 +272,8 @@ void WardrobeInput(PADCTL* ppc)
         ForgetPadctlPresses(ppc, grf);
         return true;
     };
-    constexpr int crow = 5;
+    std::vector<int> aislotCos = AislotWardrobeCos(s_wardrobe.ichar);
+    const int crow = 4 + int(aislotCos.size()) + 1;
     const int cpart = CWardrobeSlots(s_wardrobe.ichar);
     if (press(BTN_Up)) s_wardrobe.irow = (s_wardrobe.irow + crow - 1) % crow;
     if (press(BTN_Down)) s_wardrobe.irow = (s_wardrobe.irow + 1) % crow;
@@ -309,7 +321,21 @@ void WardrobeInput(PADCTL* ppc)
         }
         case 2: step(ps.val, 0.3f, 1.8f); break;
         case 3: step(ps.sat, 0.0f, 2.0f); break;
-        default: break;
+        default:
+            if (s_wardrobe.irow - 4 < int(aislotCos.size()))
+            {
+                // (an item slot: none, then its items, in turn)
+                const int islot = aislotCos[size_t(s_wardrobe.irow - 4)];
+                const std::vector<std::string> a = AstrCosmetics(s_wardrobe.ichar, islot);
+                const std::string cur = StrEquipped(s_wardrobe.ichar, islot);
+                int i = -1;
+                for (size_t k = 0; k < a.size(); ++k) if (a[k] == cur) i = int(k);
+                const int c = int(a.size()) + 1;
+                i = (i + 1 + d + c) % c - 1;
+                SetEquipped(s_wardrobe.ichar, islot, i < 0 ? std::string() : a[size_t(i)]);
+                MarkLocalPaintChanged();   // (co-op sends the worn items with the paints)
+            }
+            break;
         }
         if (s_wardrobe.irow >= 1 && s_wardrobe.irow <= 3)
         {
@@ -1316,5 +1342,14 @@ bool FWardrobeView(WARDROBEVIEW* pv)
     const PAINTSLOT& ps = LocalPaint(s_wardrobe.ichar).aslot[s_wardrobe.ipart];
     pv->sat = ps.fOn ? ps.sat : 1.0f;
     pv->val = ps.fOn ? ps.val : 1.0f;
+    pv->ccos = 0;
+    for (int islot : AislotWardrobeCos(s_wardrobe.ichar))
+    {
+        if (pv->ccos >= 3) break;
+        pv->aszCosLabel[pv->ccos] = islot == COSSLOT_Head ? "Head" : islot == COSSLOT_Back ? "Back" : "Cane";
+        const std::string id = StrEquipped(s_wardrobe.ichar, islot);
+        pv->astrCosVal[pv->ccos] = id.empty() ? (islot == COSSLOT_Hand ? "Original" : "None") : StrCosmeticName(id);
+        ++pv->ccos;
+    }
     return true;
 }

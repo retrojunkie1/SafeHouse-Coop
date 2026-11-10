@@ -30,6 +30,7 @@
 #include "transition.h"
 #include "sly2_version.h"
 #include "paint.h"
+#include "cosmetic.h"
 #include <set>
 
 #include <enet/enet.h>
@@ -79,6 +80,7 @@ enum MSG : uint8_t
     MSG_Pad = 10,       // reliable, either way: a switch / bell / plate turned on or off in the sender's game
     MSG_TaskRestart = 11, // reliable, either way: the job restarted ("try again") in the sender's game
     MSG_Scpt = 12,      // reliable, host -> joiner: a script started in the host's game (cutscene, failure screen)
+    MSG_Cosmetic = 14,  // reliable, either way: the sender's worn items (cosmetic.h: per character, per slot, the item's id)
     MSG_Paint = 13,     // reliable, either way: the sender's character paints (paint.h: per character, per slot)
     MSG_TaskReq = 8,    // reliable, joiner -> host: the joiner started a job / task: the host starts it (the joiner follows)
 };
@@ -1137,6 +1139,7 @@ void StepMirror(SW* psw)
 
 // ------------------------------------------------------------ receiving
 void SendPaints();
+void SendCosmetics();
 void OnHello(ENetPeer* ppeer, READER& r)
 {
     const uint32_t magic = r.Get<uint32_t>();
@@ -1163,7 +1166,9 @@ void OnHello(ENetPeer* ppeer, READER& r)
     s_fHaveSaveHost = false;
     std::printf("co-op: %s connected\n", s_nameRemote.c_str());
     ClearRemotePaints();
+    ClearRemoteCosmetics();
     SendPaints();
+    SendCosmetics();
     if (s_opt.mode == COOPMODE_Host) SendWorld(true);
 }
 
@@ -1196,6 +1201,28 @@ void SendPaints()
         for (const PAINTSLOT& ps : LocalPaint(c).aslot)
             w.Put<float>(ps.hue), w.Put<float>(ps.sat), w.Put<float>(ps.val), w.Put<uint8_t>(ps.fOn ? 1 : 0);
     Send(s_ppeer, w, c_chanReliable, true);
+}
+
+void SendCosmetics()
+{
+    if (!FConnected()) return;
+    WRITER w;
+    w.Put<uint8_t>(MSG_Cosmetic);
+    for (int c = 0; c < CPAINTCHAR; ++c)
+        for (int s = 0; s < COSSLOT_Max; ++s) w.PutStr(StrLocalEquipped(c, s));
+    Send(s_ppeer, w, c_chanReliable, true);
+}
+
+void OnCosmetic(READER& r)
+{
+    for (int c = 0; c < CPAINTCHAR; ++c)
+        for (int s = 0; s < COSSLOT_Max; ++s)
+        {
+            const std::string id = r.GetStr();
+            if (!r.fOk) return;
+            SetRemoteEquipped(c, s, id);
+        }
+    std::printf("co-op: %s's worn items received\n", s_nameRemote.c_str());
 }
 
 void OnPaint(READER& r)
@@ -1241,6 +1268,7 @@ void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
     case MSG_Scpt: if (fJoin) OnScpt(r); break;
     case MSG_TaskRestart: OnTaskRestart(r); break;
     case MSG_Paint: OnPaint(r); break;
+    case MSG_Cosmetic: OnCosmetic(r); break;
     default: break;
     }
 }
@@ -1582,7 +1610,7 @@ void ProbeGeometry(SW* psw)
 
 void CoopStep(SW* psw)
 {
-    if (FTakeLocalPaintChanged()) SendPaints();
+    if (FTakeLocalPaintChanged()) SendPaints(), SendCosmetics();
     if (psw && std::getenv("SLY2N_PROBE")) ProbeGeometry(psw);
     // (PC debug, SLY2N_REMOVEOIDS="8,9@t": those objects out of the world once, at game time t)
     if (static const char* s_szR = std::getenv("SLY2N_REMOVEOIDS"); s_szR && psw)
@@ -1628,6 +1656,16 @@ void CoopStep(SW* psw)
                         }
                         std::fprintf(pf, " groups %zu skinned %zu bones", pa->pglobset->aglob.size(), cskin);
                         for (int o : setBone) std::fprintf(pf, " %d", o);
+                        if (std::getenv("SLY2N_GROUPREPORT") && (pa == apalo[0] || pa->oid == 316))
+                            for (size_t i = 0; i < pa->pglobset->aglob.size(); ++i)
+                            {
+                                const GLOB& g = pa->pglobset->aglob[i];
+                                glm::vec3 mn(1e9f), mx(-1e9f);
+                                for (const VTXGLOB& v : g.avtx) mn = glm::min(mn, v.pos), mx = glm::max(mx, v.pos);
+                                std::fprintf(pf, "\n    glob %zu n0 %d vtx %zu tmpl %d box %.0f %.0f %.0f .. %.0f %.0f %.0f ibones", i, g.n0, g.avtx.size(),
+                                             g.iglobTemplate, mn.x, mn.y, mn.z, mx.x, mx.y, mx.z);
+                                for (const GLOBBONE& b : g.abone) std::fprintf(pf, " %d", b.ibone);
+                            }
                     }
                     std::fprintf(pf, "\n");
                 }
@@ -1915,6 +1953,8 @@ bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm)
 }
 
 bool FCoopRemoteRoot(const ALO* palo) { return palo && palo == s_remote.proot; }
+ALO* PaloCoopRemoteRoot() { return s_remote.proot; }
+bool FCoopRemoteShown() { return s_remote.proot && s_remote.fShown; }
 
 void CoopAppendSceneAlos(std::vector<ALO*>& apalo)
 {

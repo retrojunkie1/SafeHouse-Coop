@@ -2,6 +2,7 @@
 
 #include "texmod.h"
 #include "paint.h"
+#include "cosmetic.h"
 #include <set>
 #include "render.h"
 #include "simdmat.h"
@@ -2680,6 +2681,15 @@ void RenderPass(const SCENE& scene, const PASSVIEW& pv, const RENDEROPTS& opts)
             break;
         }
         }
+    }
+    // (QoL, cosmetic.h) the characters' worn items: the frame's own view only
+    if (pv.irtgt < 0 && !pv.fForeground)
+    {
+        const glm::vec4 fogColor = Vec4FromRgba(opts.rgbaFog, 1.0f / 255.0f);
+        const float afog[8] = {fogColor.r, fogColor.g, fogColor.b, 1.0f, opts.sFogNear, opts.sFogFar, opts.uFogMax, opts.fFog ? 1.0f : 0.0f};
+        DrawCosmetics(glm::value_ptr(matWorldToClip), glm::value_ptr(cam.pos), afog);
+        fGlobProgram = false;
+        sc.fValid = false;
     }
     if (s_cframeGlStats && pv.irtgt < 0 && !pv.fForeground)
     {

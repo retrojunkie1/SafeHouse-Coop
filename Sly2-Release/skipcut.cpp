@@ -393,16 +393,18 @@ void DrawWardrobe(const WARDROBEVIEW& v)
              : i == 3 ? glm::vec3(p, q, val) : i == 4 ? glm::vec3(t, p, val) : glm::vec3(val, p, q);
     };
     const float x0 = 28.0f, y0 = 70.0f, w = 330.0f, hRow = 30.0f;
-    constexpr int crow = 5;
+    const int crow = 4 + v.ccos + 1;
     const float h = 62.0f + crow * hRow + 30.0f;
     g_hud.FillScreenRect(x0, y0, x0 + w, y0 + h, glm::vec4(0, 0, 0, 96), zPlate - 1e-4f);
     text(std::string("Wardrobe: ") + SzPaintChar(v.ichar), x0 + 12.0f, y0 + 10.0f, 26.0f, gold);
     const PAINTBAND& band = PaintBand(v.ichar, v.ipart);
     const float hue = v.ipreset < 0 ? band.hue : PaintPreset(v.ipreset).hue;
     auto pct = [](float g) { return std::to_string(int(std::lround(g * 100.0f))) + "%"; };
-    const char* aszLabel[crow] = {"Part", "Color", "Brightness", "Saturation", "Done"};
-    const std::string aszVal[crow] = {band.szName ? band.szName : "", v.ipreset < 0 ? "Original" : PaintPreset(v.ipreset).szName,
-                                      pct(v.val), pct(v.sat), ""};
+    std::vector<const char*> aszLabel = {"Part", "Color", "Brightness", "Saturation"};
+    std::vector<std::string> aszVal = {band.szName ? band.szName : "", v.ipreset < 0 ? "Original" : PaintPreset(v.ipreset).szName,
+                                       pct(v.val), pct(v.sat)};
+    for (int i = 0; i < v.ccos; ++i) aszLabel.push_back(v.aszCosLabel[i]), aszVal.push_back(v.astrCosVal[i]);
+    aszLabel.push_back("Done"), aszVal.push_back("");
     for (int r = 0; r < crow; ++r)
     {
         const float y = y0 + 52.0f + r * hRow;

@@ -1,5 +1,6 @@
 #include "scenesw.h"
 #include "paint.h"
+#include "cosmetic.h"
 #include "simdmat.h"
 #include "drawdist.h"
 #include "display.h"
@@ -65,6 +66,7 @@ void PlaceGlobset(ALO* palo, SCENEGLOBSET& sgs)
         sgs.afVisible[i] = FAloGlobShown(palo, glob.n0, !(glob.grfGroup & 0x800)) ? 1 : 0;  // (alo.h: the run time's flags)
         static const char* s_szShow = std::getenv("SLY2_FORCESHOW");   // debugging: these oids' groups all shown
         if (s_szShow && std::strstr(s_szShow, (std::string(",") + std::to_string(palo->oid) + ",").c_str())) sgs.afVisible[i] = 1;
+        if (sgs.afVisible[i] && FCosmeticHidesGlob(palo, i)) sgs.afVisible[i] = 0;   // (QoL, cosmetic.h)
         // the group's owner record, else the object's own placement
         const XF* pxf = sgs.apxfOwner[i];
         glm::mat4 m = pxf ? pxf->matWorld : matAlo;

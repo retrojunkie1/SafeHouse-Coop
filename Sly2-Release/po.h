@@ -1,4 +1,5 @@
 #pragma once
+#include <string>
 
 // The player objects (PO, cid 0x32, module 0x1C3D70..0x1C4B00; Sly 1's PO): the objects a pad can control (the
 // characters 0x34.., the guards 0x38.., the vehicles, the safe house's menu object cid 0x46 ...), and the current
@@ -83,6 +84,9 @@ struct WARDROBEVIEW
     int ichar = 0, irow = 0, ipart = 0, cpart = 0;
     int ipreset = -1;           // the part's colour preset (-1: the original)
     float sat = 1.0f, val = 1.0f;
+    int ccos = 0;                     // the worn items' rows (after Saturation): their labels and items
+    const char* aszCosLabel[3]{};
+    std::string astrCosVal[3];
 };
 bool FWardrobeView(WARDROBEVIEW* pv);
 struct ACTOR;
