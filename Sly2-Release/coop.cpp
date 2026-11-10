@@ -1547,6 +1547,19 @@ void ProbeGeometry(SW* psw)
 void CoopStep(SW* psw)
 {
     if (psw && std::getenv("SLY2N_PROBE")) ProbeGeometry(psw);
+    // (PC debug, SLY2N_REMOVEOIDS="8,9@t": those objects out of the world once, at game time t)
+    if (static const char* s_szR = std::getenv("SLY2N_REMOVEOIDS"); s_szR && psw)
+    {
+        static bool s_fDone = false;
+        int a = -1, b = -1;
+        float t = 0;
+        if (!s_fDone && std::sscanf(s_szR, "%d,%d@%f", &a, &b, &t) == 3 && g_clock.t >= t)
+        {
+            s_fDone = true;
+            for (int oid : {a, b})
+                if (LO* plo = PloFindSwObjectByOid(psw, oid); plo && plo->fInWorld) RemoveLo(psw, plo), std::printf("removed %d\n", oid);
+        }
+    }
     // (PC debug, SLY2N_LISTNEAR="x,y,z,r,frame": the objects near a point, once)
     if (static const char* s_sz = std::getenv("SLY2N_LISTNEAR"); s_sz && psw)
     {

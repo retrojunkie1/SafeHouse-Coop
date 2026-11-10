@@ -197,7 +197,7 @@ void StepSafeHouse(LO* plo, SAFEHOUSE& sh, int d)
 // character available: the Paris scripts give the list (10 7) (ThiefNet, Sly) until Bentley's / Murray's jobs open.
 // (Paris: the hub's script gives (10 7) and conses 9 (Murray) when task 1878's state is 1+, 8 (Bentley) when task
 // 1586's is; every hub has its own such script.)
-bool s_fAllCharacters = false;   // debug (F6): every state of the option's list stays allowed
+bool s_fAllCharacters = std::getenv("SLY2N_ALLCHARS") != nullptr;   // debug (F6, or SLY2N_ALLCHARS): every state of the option's list stays allowed
 std::vector<OID> AoidOptionStates(const LO* plo)
 {
     std::vector<OID> a;
@@ -674,14 +674,13 @@ void StandSafeHouseActor(LO* pa)
         DetachAloContactsAll(static_cast<ALO*>(pa));
     }
     // (its last time on the floor is from before the scene seated it: standing checks it (off the floor 0.1 s: a fall))
-    if (SLY* psly = PslyFromLo(pa)) psly->tFloor = g_clock.t;
+    if (pact) pact->tFloor = g_clock.t;
     // (set as stepped off a ledge (airborne): it lands on the floor under it as it would from a step; set standing, its
     // floor contact was the scene's (none): it sank, then fell)
-    if (SLY* psly = PslyFromLo(pa))
-    {
-        SetSlyState(psly, 0, 0);
-        SetJumpKind(&psly->jump, 0, 0, nullptr);   // (as the timed reset off a floor does: a step off)
-    }
+    if (SLY* psly = PslyFromLo(pa)) SetSlyState(psly, 0, 0);
+    else if (BENTLEY* pb = dynamic_cast<BENTLEY*>(pact)) SetBentleyState(pb, 0);
+    else if (MURRAY* pm = dynamic_cast<MURRAY*>(pact)) SetMurrayState(pm, 0);
+    if (pact) SetJumpKind(&pact->jump, 0, 0, nullptr);   // (as the timed reset off a floor does: a step off)
     // (its position and rotation records released as in play (mode 3; the constraint's change left them held (1):
     // it drifted up off the floor standing)
     if (FCidDerivedFrom(pa->Cid(), 0x30))
@@ -690,8 +689,6 @@ void StandSafeHouseActor(LO* pa)
         if (XF* pxf = PxfPos(palo); pxf && pxf->mode == 1) ReleaseXfMode(palo, pxf);
         if (XF* pxf = PxfRot(palo); pxf && pxf->mode == 1) ReleaseXfMode(palo, pxf);
     }
-    else if (BENTLEY* pb = dynamic_cast<BENTLEY*>(pact)) SetBentleyState(pb, 0);
-    else if (MURRAY* pm = dynamic_cast<MURRAY*>(pact)) SetMurrayState(pm, 0);
 }
 
 // (the walkable safe house, po.h) the prompt drawn (hudwidget.cpp): 1 sit down, 2 stand up, 0 none
@@ -706,6 +703,19 @@ int NSafeHousePromptImpl()
 // (the walkable safe house, po.h) the safe house's own door (a use by it whose script shuts a door (its first
 // state machine command) and swings it open (its last)): opened where it stands and walked through, the script (a
 // fade into the menu) not run; closed again once the player is away from it
+// (the menu's exit takes the gang members not played out of the world (its script); walking back in (or opening the
+// door to) the hideout puts them back at the table, where they were left seated)
+void ReturnSafeHouseGang()
+{
+    LO* ppo = PloPoCurrent(g_psw);
+    for (OID oid : {OID(7), OID(8), OID(9)})
+        if (LO* pg = PloFindSwObjectByOid(g_psw, oid); pg && pg != ppo && !pg->fInWorld)
+        {
+            std::printf("safe house: %d back at the table\n", oid);
+            AddLo(g_psw, pg);
+        }
+}
+
 struct DOORSH
 {
     SW* psw = nullptr;
@@ -769,6 +779,7 @@ bool FSafeHouseDoorUseImpl(LO* puse, ACTOR* pa)
     else std::copy(an[0], an[0] + 3, s_door.anOpen);
     s_door.fOpen = true, s_door.tOpen = g_clock.t;
     ApplyDoorSma(s_door.anOpen);
+    ReturnSafeHouseGang();
     std::printf("safe house: door %d opened (object %d to %d)\n", puse->oid, s_door.anOpen[0], s_door.anOpen[2]);
     (void)pa;
     return true;
@@ -807,6 +818,7 @@ void UpdateSafeHouse(LO* plo)
         if (!s_fArmed || dxy > 400.0f || std::fabs(d.z) > 300.0f) return;
         s_fArmed = false;
         std::printf("safe house: walked in as %d\n", ppo->oid);
+        ReturnSafeHouseGang();
         SetSafeHouseState(g_psw, plo, 1);
         TakeSafeHouseActor(ppo, nullptr);
         s_walk.ploActor = ppo;
