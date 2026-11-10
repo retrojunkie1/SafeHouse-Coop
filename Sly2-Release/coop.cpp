@@ -1645,9 +1645,20 @@ bool FCoopForwardGuardHit(ALO* palo, const CTMSG* pctm)
     const LO* ploPlayer = g_psw ? PloPoCurrent(g_psw) : nullptr;
     const LO* ploSender = pctm->ploSender;
     while (ploSender && ploSender->paloParent) ploSender = ploSender->paloParent;
-    GUARD* pg = PguardFromLo(palo);
-    const bool fMatters = pg && (FGuardHitMatters(pg, pctm) || pctm->grfAccepted != 0);
-    if (!ploPlayer || ploSender != ploPlayer || !fMatters) return true;
+    // (an attack by its kind alone (FGuardHitMatters' filter test): the frozen copy's own state (its toughness +0x338,
+    // a story character's) is not asked; the game running it decides)
+    const int32_t k = static_cast<int32_t>(pctm->grfFilter);
+    const bool fAttack = pctm->grfAccepted != 0 || (k != 0x80000 && k != 0x100000 && (k < 0 || 2 <= k));
+    static double s_tLogContact = 0.0;
+    if (TNow() - s_tLogContact > 0.5)
+    {
+        s_tLogContact = TNow();
+        std::printf("co-op: contact on mirrored %d (cid 0x%X) from %d (root %d, player %d) filter 0x%X state %d accepted 0x%X: %s\n",
+                    palo->oid, int(palo->Cid()), pctm->ploSender ? pctm->ploSender->oid : -1, ploSender ? ploSender->oid : -1,
+                    ploPlayer ? ploPlayer->oid : -1, pctm->grfFilter, pctm->nState, pctm->grfAccepted,
+                    ploPlayer && ploSender == ploPlayer && fAttack ? "sent" : "not an attack by the player");
+    }
+    if (!ploPlayer || ploSender != ploPlayer || !fAttack) return true;
     static std::unordered_map<uint64_t, double> s_mptLast;
     double& tLast = s_mptLast[it->second];
     if (TNow() - tLast < 0.25) return true;
