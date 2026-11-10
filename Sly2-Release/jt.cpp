@@ -670,6 +670,8 @@ LO* PloAuraProxy(ACTOR* pa)
 // out over 0.5 s; new ones added with the game event 0x3D, the nearest prompted one with the player's aura)
 void TrackJt(ACTOR* pa, int n, JTENT* aent)
 {
+    // (QoL, po.h: the walkable safe house's own door is not offered: the hideout is walked into)
+    n = int(std::remove_if(aent, aent + n, [](const JTENT& e) { return FSafeHouseDoorHidden(e.plo); }) - aent);
     auto byDist = [](const JTENT& a, const JTENT& b) { return a.dist < b.dist; };
     if (n > 0)
     {

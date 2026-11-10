@@ -40,6 +40,7 @@ bool FSkipCutStep();
 uint16_t GrfSkipCutMask();
 // The hint and the indicator (the HUD pass, over everything).
 void DrawSkipCut();
+void DrawSafeHousePrompt();   // (QoL: the walkable safe house's sit down / stand up prompt)
 // (scpt.cpp) a runner waits for a button this step (command 0x42)
 void NoteScptWaitsForButton();
 

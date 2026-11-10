@@ -610,6 +610,7 @@ void DrawHud(SW* psw, int width, int height)
     if (!FDebugHudHidden() || FMenuShown()) DrawScreenObjs(psw);
     DrawHackCursor();   // (hackmouse.h: the hacking minigame's mouse cursor)
     DrawSkipCut();   // (skipcut.h: the hint / the indicator over everything)
+    DrawSafeHousePrompt();
     g_hud.Flush(width, height);
 }
 

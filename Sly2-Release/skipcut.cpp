@@ -368,3 +368,21 @@ void DrawMovieSkip() { DrawHint(s_skipMovie); }
 
 void FMovieSkipTest() { s_skip.fMaskCircle = true; }   // (SLY2N_MOVIESKIPAT: what a hold's skip leaves behind)
 
+
+// (QoL, po.h: the walkable safe house) its prompt at the bottom right, as the skip hint: Triangle to sit down at the
+// table / to stand up from it
+void DrawSafeHousePrompt()
+{
+    const int n = NSafeHousePrompt();
+    if (!n) return;
+    const FONTBRX* pfont = PfontHud();
+    const FONTBRX* picons = PfontHudIcons();
+    if (!pfont) return;
+    const std::string text = std::string(picons ? (n == 1 ? "&2O&. " : "&2T&. ") : (n == 1 ? "Circle: " : "Triangle: ")) + (n == 1 ? "Sit down" : "Stand up");
+    const float size = 24.0f, xRight = 616.0f, yTop = 412.0f, depth = 16000000.0f;
+    const float w = DxText(*pfont, picons, text, size);
+    const float hText = size * 0.909f;
+    g_hud.FillScreenRect(xRight - w - 10.0f, yTop - 5.0f, xRight + 6.0f, yTop + hText + 7.0f, glm::vec4(0, 0, 0, 72), depth / 16777216.0f - 1e-4f);
+    g_hud.DrawTextBox(*pfont, picons, text, xRight - w - 320.0f, (yTop - 224.0f) * 1.1f, size, 1.0f, 1.0f, 0.0f, 0.0f, 0, 0,
+                      glm::vec4(200.0f, 200.0f, 200.0f, 0.0f), glm::vec4(1.0f), glm::vec4(0.0f), depth + 100.0f, false);
+}

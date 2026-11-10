@@ -38,6 +38,8 @@ void PrintRef(const CRef& ref, std::string* ps);  // bif.cpp (debug)
 #include "asega.h"
 #include "gang.h"
 #include "sly.h"
+#include "jump.h"
+#include "xf.h"
 #include "sw.h"
 #include "task.h"
 #include "transition.h"
@@ -48,6 +50,7 @@ void PrintRef(const CRef& ref, std::string* ps);  // bif.cpp (debug)
 #include "frontend.h"
 #include "menu.h"
 #include "shop.h"
+#include "skipcut.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -136,7 +139,17 @@ struct WALKSH
     int phase = 0;            // 1: entered (the switch to the character next), 2: walking
     float tEnter = 0.0f;
     OID oidNear = -1;         // the choice stood by (-1 none)
+    glm::vec3 posSeat{0.0f};  // the walking character's chair (its place at the table when it stood up)
+    bool fBySeat = false;     // standing by it: Triangle sits down (the safe house's menu again)
+    int cstepStand = 0;       // steps until it is set standing (placed first: its ground found by the physics)
+    bool fSitReq = false;     // the use button pressed by the table (taken before the character's own update)
+    glm::vec3 posGood{0.0f};  // its last place over the hideout's floor (the deck's open edge held, see below)
+    bool fGood = false;
 };
+// 4 (phase): sat at the table, the original menu (Triangle stands up)
+bool s_fArmed = false;         // (walking in enters the safe house: armed once the player has been seen out of it)
+uint32_t s_serialArmed = 0;     // (the world it was armed in)
+bool s_fSitting = false;       // (the safe house shown again by sitting down: its menu, not the walk)
 WALKSH s_walk;
 bool s_fWalkSwitch = false;   // (the character taking the pad: the safe house is not left)
 
@@ -296,7 +309,7 @@ void SetSafeHouseState(SW* psw, LO* plo, int n)
     StepSafeHouse(plo, sh, 0);   // orig 0x1D77D0(p, 0)
     ClearJoySteps();             // orig 0x187E78
     Event(plo, 5);
-    if (FWalkableSafeHouse()) s_walk = WALKSH{plo, nullptr, 1, g_clock.t, -1};
+    if (FWalkableSafeHouse()) s_walk = WALKSH{plo, nullptr, s_fSitting ? 4 : 1, g_clock.t, -1};
 }
 }
 
@@ -393,6 +406,10 @@ void ForgetPadctlPresses(PADCTL* ppc, uint32_t grf)
         if (grf & 1) ppc->atPressed[i] = G_NEG_FLT_MAX;
 }
 
+// (the controller's buttons are in the pad's own layout (joy.h JOYPS2): Circle (BTN_Circle byte-swapped))
+constexpr uint32_t kgrfPadCircle = ((BTN_Circle & 0xFF) << 8) | (BTN_Circle >> 8);
+constexpr uint32_t kgrfPadTriangle = ((BTN_Triangle & 0xFF) << 8) | (BTN_Triangle >> 8);   // (frontend.h's too)
+
 void UpdateAllPadctls()
 {
     // (debug: SLY2N_SETPO="OID@T[;OID@T...]" makes the player object OID the current player at game time T, as the
@@ -416,6 +433,15 @@ void UpdateAllPadctls()
         }
     }
     for (auto& ppc : s_lpadctl) UpdatePadctl(ppc.get());
+    // (the walkable safe house: the use button by the table sits down; taken here, before the character's update
+    // would use it (and consume it) for its own interactions)
+    if (s_walk.phase == 2 && s_walk.fBySeat && s_walk.ploActor && PloPoCurrent(g_psw) == s_walk.ploActor)
+        if (PODATA* ppd = PpodataFromLo(s_walk.ploActor); ppd && ppd->ppadctl &&
+                                                          GrfPadctlPressedWithin(ppd->ppadctl, kgrfPadCircle, 0.1f))
+        {
+            s_walk.fSitReq = true;
+            ForgetPadctlPresses(ppd->ppadctl, kgrfPadCircle);
+        }
 }
 
 LO* PloPoCurrent(SW*) { return s_ploOverride ? s_ploOverride : s_ploCur; }
@@ -526,6 +552,164 @@ namespace
 // orig 0x001D72A8 (the safe house's vt slot 16): left / right through its allowed states; a state's button
 // (option 1338: {state, buttons, target}) opens the shop (0x378: 0x1DC260(0x3DA150, 0)) or starts the target's
 // script (0x1DFD58, scpt.cpp)
+// (the walkable safe house) a line through the active hit shapes, not plo's own (its body): the hit's place
+bool FLineHits(const glm::vec3& p0, const glm::vec3& p1, const LO* ploSkip, glm::vec3* ppos)
+{
+    const glm::vec3 mn = glm::min(p0, p1) - glm::vec3(1.0f), mx = glm::max(p0, p1) + glm::vec3(1.0f);
+    std::vector<SOE*> apsoe;
+    for (OXA* poxa : g_physw.apoxaActive)
+    {
+        if (mx.x < poxa->posMin.x || poxa->posMax.x < mn.x || mx.y < poxa->posMin.y || poxa->posMax.y < mn.y ||
+            mx.z < poxa->posMin.z || poxa->posMax.z < mn.z)
+            continue;
+        for (SOE* psoe : poxa->apsoe)
+        {
+            const LO* proot = psoe->palo;
+            while (proot && proot->paloParent) proot = proot->paloParent;
+            if (proot && proot == ploSkip) continue;
+            apsoe.push_back(psoe);
+        }
+    }
+    LSG lsg;
+    if (!PsoeHitTestLineObjects(0, p0, p1, apsoe, &lsg)) return false;
+    if (ppos) *ppos = lsg.pos0;
+    return true;
+}
+
+// (the walkable safe house) a place to stand near the chair: around it (8 ways, a step and a long step), the first
+// with a floor under it (within reach of the chair's height) and no wall between (the chairs are at the deck's edge)
+bool FStandNear(const LO* pa, const glm::vec3& posSeat, const glm::vec3& posTable, glm::vec3* ppos)
+{
+    glm::vec2 dir0 = glm::vec2(posTable - posSeat);
+    dir0 = glm::length(dir0) > 1.0f ? glm::normalize(dir0) : glm::vec2(1.0f, 0.0f);
+    for (float r : {90.0f, 140.0f, 190.0f})
+        for (int k = 0; k < 8; ++k)
+        {
+            // (around from the table's side: the table's own way first is skipped (the table there))
+            const float a = 3.14159265f / 4.0f * float((k + 2) % 8);
+            const glm::vec2 dir(dir0.x * std::cos(a) - dir0.y * std::sin(a), dir0.x * std::sin(a) + dir0.y * std::cos(a));
+            const glm::vec3 p(glm::vec2(posSeat) + dir * r, posSeat.z);
+            if (FLineHits(posSeat, p, pa, nullptr)) continue;   // (a wall, the table)
+            glm::vec3 hit;
+            if (!FLineHits(p + glm::vec3(0, 0, 10), p - glm::vec3(0, 0, 300), pa, &hit)) continue;   // (no floor)
+            if (p.z - hit.z > 160.0f) continue;
+            // (clear of the others at the table (standing into one, the contact lifted it off the floor, rising) and
+            // with floor all around (not at the deck's open edge))
+            bool fClear = true;
+            for (OID oid : {OID(7), OID(8), OID(9)})
+                if (LO* pg = PloFindSwObjectByOid(g_psw, oid); pg && pg != pa && pg->fInWorld &&
+                                                               glm::length(glm::vec2(PosLoWorld(pg)) - glm::vec2(p)) < 120.0f)
+                    fClear = false;
+            for (int j = 0; j < 4 && fClear; ++j)
+            {
+                const glm::vec3 q = p + glm::vec3(j == 0 ? 60.0f : j == 1 ? -60.0f : 0.0f, j == 2 ? 60.0f : j == 3 ? -60.0f : 0.0f, 0.0f);
+                glm::vec3 hitQ;
+                if (!FLineHits(q + glm::vec3(0, 0, 10), q - glm::vec3(0, 0, 300), pa, &hitQ) || std::fabs(hitQ.z - hit.z) > 30.0f)
+                    fClear = false;
+            }
+            if (!fClear) continue;
+            *ppos = glm::vec3(p.x, p.y, hit.z + 86.0f);
+            return true;
+        }
+    return false;
+}
+
+// (the walkable safe house) the character takes the pad standing: the scene's hold on it let go, its state standing,
+// placed (pos: on the floor under it) with no speed
+void TakeSafeHouseActor(LO* pa, const glm::vec3* ppos)
+{
+    if (!pa->fInWorld) AddLo(g_psw, pa);
+    if (PloPoCurrent(g_psw) != pa)
+    {
+        s_fWalkSwitch = true;
+        EnablePo(g_psw, pa, 1);
+        s_fWalkSwitch = false;
+    }
+    if (!FCidDerivedFrom(pa->Cid(), 0x30)) return;
+    for (ASEGA* pasega : std::vector<ASEGA*>(g_apasega))
+        if (pasega && !pasega->fRetracted && pasega->palo == static_cast<ALO*>(pa)) RetractAsega(pasega);
+    ACTOR* pact = PactorFromLo(pa);
+    if (pact && pact->psma) ClearSmaHandle(&pact->psma);
+    if (pact && ppos)
+    {
+        const glm::vec3 pos = *ppos;
+        std::printf("safe house: stands at %.0f %.0f %.0f\n", pos.x, pos.y, pos.z);
+        SetStepPos(pact, pos);
+        SetAloVelocityTo(static_cast<ALO*>(pa), glm::vec3(0.0f));
+        SetAloAngVelocityTo(static_cast<ALO*>(pa), glm::vec3(0.0f));
+    }
+    // (the scene fixed its position (a linear constraint of kind 3: still, no gravity, no ground found): freed as
+    // in play (linear free, angular fixed), else it hung in the air and fell through the floor)
+    if (Psost(static_cast<ALO*>(pa)))
+    {
+        SetAloCnstrLin(static_cast<ALO*>(pa), 0);
+        SetAloCnstrAng(static_cast<ALO*>(pa), 1);
+    }
+    // (set standing two steps later (StandSafeHouseActor): set now, its ground not yet found under the new place,
+    // it went to the jump state and hung there)
+    s_walk.cstepStand = 2;
+}
+
+void StandSafeHouseActor(LO* pa)
+{
+    ACTOR* pact = PactorFromLo(pa);
+    // (its hit shapes, the ground probe's among them, were left where the scene took it (the door): its records
+    // marked moved and its bounds refreshed, else no floor is found under it and it falls (through the floor at times))
+    if (FCidDerivedFrom(pa->Cid(), 0x30))
+    {
+        std::vector<ALO*> apalo{static_cast<ALO*>(pa)};
+        for (size_t i = 0; i < apalo.size(); ++i)
+        {
+            for (auto& upxf : apalo[i]->axf) if (upxf) upxf->nStamp = ++g_cXfStamp;
+            for (LO* pc : apalo[i]->aploChild)
+                if (pc && FCidDerivedFrom(pc->Cid(), 0x30)) apalo.push_back(static_cast<ALO*>(pc));
+        }
+        for (ALO* palo : apalo)
+            if (OXA* poxa = Poxa(palo); poxa && poxa->pso == palo) UpdateAloBounds(palo);
+        // (its contacts were the scene's (made while held): dropped, new ones (its floor among them) found next step)
+        DetachAloContactsAll(static_cast<ALO*>(pa));
+    }
+    // (its last time on the floor is from before the scene seated it: standing checks it (off the floor 0.1 s: a fall))
+    if (SLY* psly = PslyFromLo(pa)) psly->tFloor = g_clock.t;
+    // (set as stepped off a ledge (airborne): it lands on the floor under it as it would from a step; set standing, its
+    // floor contact was the scene's (none): it sank, then fell)
+    if (SLY* psly = PslyFromLo(pa))
+    {
+        SetSlyState(psly, 0, 0);
+        SetJumpKind(&psly->jump, 0, 0, nullptr);   // (as the timed reset off a floor does: a step off)
+    }
+    // (its position and rotation records released as in play (mode 3; the constraint's change left them held (1):
+    // it drifted up off the floor standing)
+    if (FCidDerivedFrom(pa->Cid(), 0x30))
+    {
+        ALO* palo = static_cast<ALO*>(pa);
+        if (XF* pxf = PxfPos(palo); pxf && pxf->mode == 1) ReleaseXfMode(palo, pxf);
+        if (XF* pxf = PxfRot(palo); pxf && pxf->mode == 1) ReleaseXfMode(palo, pxf);
+    }
+    else if (BENTLEY* pb = dynamic_cast<BENTLEY*>(pact)) SetBentleyState(pb, 0);
+    else if (MURRAY* pm = dynamic_cast<MURRAY*>(pact)) SetMurrayState(pm, 0);
+}
+
+// (the walkable safe house, po.h) the prompt drawn (hudwidget.cpp): 1 sit down, 2 stand up, 0 none
+int NSafeHousePromptImpl()
+{
+    if (!s_walk.plosh || FShopShown() || FMenuShown()) return 0;
+    if (s_walk.phase == 2 && s_walk.fBySeat) return 1;
+    if (s_walk.phase == 4) return 2;
+    return 0;
+}
+
+// (the walkable safe house, po.h) the safe house's own door: not offered (its use is a load into the menu; the
+// hideout is walked into through its open doorway)
+bool FSafeHouseDoorHiddenImpl(const LO* plo)
+{
+    if (!FWalkableSafeHouse() || !plo || !g_psw || !FIsLoDerivedFrom(const_cast<LO*>(plo), 0x23)) return false;
+    const glm::vec3 pos = PosLoWorld(const_cast<LO*>(plo));
+    for (LO* psh : AploOfClass(g_psw, 0x46))
+        if (glm::length(glm::vec2(PosLoWorld(psh) - pos)) < 1100.0f) return true;
+    return false;
+}
+
 void UpdateSafeHouse(LO* plo)
 {
     if (PFNUPDATE pfn = PfnUpdateOrig(0x1F36E0)) pfn(plo);
@@ -533,9 +717,37 @@ void UpdateSafeHouse(LO* plo)
     if (it == s_mpsh.end()) return;
     SAFEHOUSE& sh = it->second;
     if (std::getenv("SLY2N_WALKDBG")) { static int s_c = 0; if (s_c++ % 60 == 0) std::printf("safe house update: state %d psma %p shop %d menu %d walk %d phase %d\n", sh.nState, (void*)sh.psma, FShopShown(), FMenuShown(), s_walk.plosh == plo, s_walk.phase); }
+    // (the walkable safe house: walking in through the doorway enters it, the walk going on)
+    if (FWalkableSafeHouse() && sh.nState == 0)
+    {
+        LO* ppo = PloPoCurrent(g_psw);
+        if (!ppo || !FCidDerivedFrom(ppo->Cid(), 0x34) || FShopShown() || FMenuShown()) return;
+        const glm::vec3 d = PosLoWorld(ppo) - PosLoWorld(plo);
+        const float dxy = glm::length(glm::vec2(d));
+        if (s_serialArmed != g_psw->serial) s_fArmed = false, s_serialArmed = g_psw->serial;
+        // (no cutscene, load or script holding the player: a scripted walk (the hub's opening) is not walking in)
+        if (IdScptCutscene() || g_transition.fPending) return;
+        if (dxy > 560.0f && dxy < 4000.0f && g_clock.t > 3.0f) s_fArmed = true;
+        if (!s_fArmed || dxy > 400.0f || std::fabs(d.z) > 300.0f) return;
+        s_fArmed = false;
+        std::printf("safe house: walked in as %d\n", ppo->oid);
+        SetSafeHouseState(g_psw, plo, 1);
+        TakeSafeHouseActor(ppo, nullptr);
+        s_walk.ploActor = ppo;
+        s_walk.phase = 2;
+        s_walk.posSeat = glm::vec3(0.0f);   // (its chair not known: walked in, it never sat; no sitting down)
+        return;
+    }
     if (sh.nState != 1 || !sh.psma) return;
     if (FShopShown() || FMenuShown()) return;   // (0x14FD50: the camera's own; the shop / menus take the pad)
-    const bool fWalk = FWalkableSafeHouse() && s_walk.plosh == plo;
+    // (sat at the table: the original menu; Triangle stands up)
+    if (FWalkableSafeHouse() && s_walk.plosh == plo && s_walk.phase == 4 && GrfbtnTakePressed(kgrfPadTriangle))
+    {
+        s_walk.phase = 1;
+        s_walk.tEnter = g_clock.t - 1.0f;
+        return;
+    }
+    const bool fWalk = FWalkableSafeHouse() && s_walk.plosh == plo && s_walk.phase != 4;
     if (fWalk && s_walk.phase == 1)
     {
         // (once the safe house's camera has settled: the character it shows takes the pad, the safe house stays shown)
@@ -544,22 +756,13 @@ void UpdateSafeHouse(LO* plo)
         const OID oidActor = (oidCur == 8 || oidCur == 9) ? oidCur : 7;
         LO* pa = PloFindSwObjectByOid(g_psw, oidActor);
         if (!pa) { s_walk = WALKSH{}; return; }
-        if (!pa->fInWorld) AddLo(g_psw, pa);
-        s_fWalkSwitch = true;
-        EnablePo(g_psw, pa, 1);
-        s_fWalkSwitch = false;
-        // (the safe house's scene holds the character at the table: its sequences on it retracted, its machine
-        // handle cleared, so its own movement (idle, walk) takes over)
-        if (FCidDerivedFrom(pa->Cid(), 0x30))
-        {
-            for (ASEGA* pasega : std::vector<ASEGA*>(g_apasega))
-                if (pasega && !pasega->fRetracted && pasega->palo == static_cast<ALO*>(pa)) RetractAsega(pasega);
-            if (ACTOR* pact = PactorFromLo(pa); pact && pact->psma) ClearSmaHandle(&pact->psma);
-            // (its scripted state (18: held by the scene) to standing)
-            if (SLY* psly = PslyFromLo(pa)) SetSlyState(psly, 0, 0);
-            else if (BENTLEY* pb = dynamic_cast<BENTLEY*>(PactorFromLo(pa))) SetBentleyState(pb, 0);
-            else if (MURRAY* pm = dynamic_cast<MURRAY*>(PactorFromLo(pa))) SetMurrayState(pm, 0);
-        }
+        // (the scene holds the character in its chair: it stands up a step out from the table, on the floor (its chair
+        // is raised: taken from there it fell, and through the floor at times))
+        const glm::vec3 posSeat = PosLoWorld(pa), posTable = PosLoWorld(plo);
+        glm::vec3 posStand;
+        const bool fStand = FStandNear(pa, posSeat, posTable, &posStand);
+        TakeSafeHouseActor(pa, fStand ? &posStand : nullptr);
+        s_walk.posSeat = posSeat;
         s_walk.ploActor = pa;
         s_walk.phase = 2;
         std::printf("safe house: walking as %d\n", oidActor);
@@ -568,19 +771,62 @@ void UpdateSafeHouse(LO* plo)
     if (fWalk)
     {
         if (s_walk.phase != 2) return;   // (3: a choice made, the original's action runs)
+        if (s_walk.cstepStand > 0 && --s_walk.cstepStand == 0 && s_walk.ploActor) StandSafeHouseActor(s_walk.ploActor);
         // the choice stood by: the other gang members (their places), ThiefNet (the table, the safe house's place)
         if (!s_walk.ploActor || PloPoCurrent(g_psw) != s_walk.ploActor) return;
         // (the safe house's fixed look-at camera (priority 10, its states' shots) taken off: the character's follow
         // camera under it shows the walk; the states re-push it, so each step)
         if (g_cm.ccpr > 1 && g_cm.acpr[0].cpp == 10 && dynamic_cast<CPLOOKAT*>(g_cm.acpr[0].pcplcy))
             RevokeCmPolicy(&g_cm, 3, 10, g_cm.acpr[0].pcplcy, nullptr, nullptr);
-        const glm::vec3 posMe = PosLoWorld(s_walk.ploActor);
+        glm::vec3 posMe = PosLoWorld(s_walk.ploActor);
+        // (the deck's balcony: a fall from it (over its rail, into the canal below) puts the character back where it
+        // last stood on the deck, as the game's own falls into water do)
+        if (s_walk.cstepStand == 0 && FCidDerivedFrom(s_walk.ploActor->Cid(), 0x30))
+        {
+            const float zFloor = PosLoWorld(plo).z - 10.0f;
+            glm::vec3 posHit;
+            if (FLineHits(posMe, posMe - glm::vec3(0.0f, 0.0f, 200.0f), s_walk.ploActor, &posHit) &&
+                posHit.z > zFloor - 220.0f && posHit.z < zFloor + 60.0f && posMe.z - posHit.z < 110.0f)
+                s_walk.posGood = posMe, s_walk.fGood = true;   // (stood on the hideout's floor (its stairs among it))
+            else if (s_walk.fGood && posMe.z > s_walk.posGood.z - 120.0f && posMe.z < s_walk.posGood.z + 40.0f &&
+                     glm::length(glm::vec2(posMe - s_walk.posGood)) < 80.0f)
+            {
+                // (walking off its open edge: held at the edge, as at a wall; a jump (higher) is left alone)
+                if (std::getenv("SLY2N_EDGEDBG"))
+                    std::printf("safe house hold: me %.0f %.0f %.0f good %.0f %.0f %.0f\n", posMe.x, posMe.y, posMe.z,
+                                s_walk.posGood.x, s_walk.posGood.y, s_walk.posGood.z);
+                ALO* palo = static_cast<ALO*>(s_walk.ploActor);
+                const glm::vec3 pos(s_walk.posGood.x, s_walk.posGood.y, std::max(posMe.z, s_walk.posGood.z));
+                if (ACTOR* pact = PactorFromLo(palo)) SetStepPos(pact, pos);
+                else SetAloPos(palo, pos);
+                if (XF* pxf = PxfPos(palo)) SetAloVelocityTo(palo, glm::vec3(0.0f, 0.0f, std::max(0.0f, pxf->vel.z)));
+                if (SLY* psly = PslyFromLo(palo))
+                {
+                    psly->tFloor = g_clock.t;
+                    if (psly->state == 2 || psly->state == 14) SetSlyState(psly, 0, 0);
+                }
+                posMe = pos;
+            }
+            else if (s_walk.fGood && posMe.z < s_walk.posGood.z - 300.0f)
+            {
+                std::printf("safe house: fell off the deck, back at %.0f %.0f %.0f\n", s_walk.posGood.x, s_walk.posGood.y, s_walk.posGood.z);
+                ALO* palo = static_cast<ALO*>(s_walk.ploActor);
+                if (ACTOR* pact = PactorFromLo(palo)) SetStepPos(pact, s_walk.posGood);
+                else SetAloPos(palo, s_walk.posGood);
+                SetAloVelocityTo(palo, glm::vec3(0.0f));
+                if (SLY* psly = PslyFromLo(palo)) psly->tFloor = g_clock.t, SetSlyState(psly, 0, 0);
+                posMe = s_walk.posGood;
+            }
+        }
         // (walked out of the hideout (it opens onto the street): the safe house left, as its exit does, the walk goes on
         // in the hub)
-        if (glm::length(glm::vec2(posMe - PosLoWorld(plo))) > 520.0f)
+        // (towards its door (the street side, south of the table); the balcony's side is the canal's, fallen into)
+        if (glm::length(glm::vec2(posMe - PosLoWorld(plo))) > 520.0f && posMe.y < PosLoWorld(plo).y - 300.0f &&
+            posMe.z > PosLoWorld(plo).z - 150.0f)
         {
             std::printf("safe house: walked out\n");
             s_walk = WALKSH{};
+            s_fArmed = false;
             SetSafeHouseState(g_psw, plo, 0);
             return;
         }
@@ -589,13 +835,32 @@ void UpdateSafeHouse(LO* plo)
         float dBest = 170.0f;
         for (OID oid : aoid)
         {
-            if (oid == s_walk.ploActor->oid) continue;
+            if (oid == s_walk.ploActor->oid || oid == 10) continue;   // (ThiefNet: the menu sat at the table)
             glm::vec3 pos;
             if (oid == 10) pos = PosLoWorld(plo);
             else if (LO* pg = PloFindSwObjectByOid(g_psw, oid)) pos = PosLoWorld(pg);
             else continue;
             const float d = glm::length(glm::vec2(pos - posMe));
             if (d < dBest) dBest = d, oidNear = oid;
+        }
+        // (by its own chair, nothing else nearer: Triangle sits down, the safe house's menu again)
+        // (walked in, its chair not known: the table's edge)
+        // (the table: Triangle (the use button) by it, or by the character's own chair, sits down)
+        s_walk.fBySeat = glm::length(glm::vec2(PosLoWorld(plo) - posMe)) < 230.0f ||
+                         (s_walk.posSeat != glm::vec3(0.0f) && glm::length(glm::vec2(s_walk.posSeat - posMe)) < 120.0f);
+        // (the use button (Interact, Circle by default) is the walking character's: read from its controller)
+        const bool fSitReq = s_walk.fSitReq;
+        s_walk.fSitReq = false;
+        if (s_walk.fBySeat && fSitReq)
+        {
+            std::printf("safe house: sat down\n");
+            LO* plosh = plo;
+            s_walk = WALKSH{};
+            SetSafeHouseState(g_psw, plosh, 0);
+            s_fSitting = true;
+            EnablePo(g_psw, plosh, 1);
+            s_fSitting = false;
+            return;
         }
         if (oidNear != s_walk.oidNear)
         {
@@ -751,3 +1016,6 @@ int OidSafeHouseShown(const LO* plo, std::vector<OID>* paoidAllowed)
     if (paoidAllowed) *paoidAllowed = AoidAllowed(plo);
     return OidSmaCur(it->second.psma);
 }
+
+int NSafeHousePrompt() { return NSafeHousePromptImpl(); }
+bool FSafeHouseDoorHidden(const LO* plo) { return FSafeHouseDoorHiddenImpl(plo); }

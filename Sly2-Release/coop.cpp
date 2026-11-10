@@ -1583,7 +1583,29 @@ void CoopStep(SW* psw)
                 std::printf("probepos: t %.1f %d at %.0f %.0f %.0f inworld %d parent %d active %d po %d ctl %d \n", g_clock.t, plo->oid, p.x, p.y, p.z,
                             int(plo->fInWorld), plo->paloParent ? plo->paloParent->oid : -1, int(FLoActive(plo)),
                             PloPoCurrent(psw) == plo, NPoEnabled(plo));
-                if (SLY* ps = PslyFromLo(plo)) std::printf("probepos:   sly state %d\n", ps->state);
+                if (SLY* ps = PslyFromLo(plo))
+                {
+                    OXA* poxa = Poxa(static_cast<ALO*>(plo));
+                    const bool fActive = poxa && std::find(g_physw.apoxaActive.begin(), g_physw.apoxaActive.end(), poxa) != g_physw.apoxaActive.end();
+                    SOST* pst = Psost(static_cast<ALO*>(plo));
+                    std::printf("probepos:   sly state %d oxa %p grf 0x%llx physactive %d gravity %.0f tFloor %.2f\n", ps->state, (void*)poxa,
+                                poxa ? (unsigned long long)poxa->grf : 0ull, int(fActive), pst ? pst->dvGravity.z : 0.0f, ps->tFloor);
+                    ALO* palo = static_cast<ALO*>(plo);
+                    std::printf("probepos:   soes %zu inoxa %zu:", palo->asoe.size(), poxa ? poxa->apsoe.size() : 0);
+                    for (SOE& e : palo->asoe)
+                        std::printf(" [%d %d%d%d%d st%d pin%d]", e.tag, int(e.f48), int(e.f49), int(e.f50), int(e.fInOxa), e.state, e.pinned);
+                    std::printf(" cnstr %d %d iced %d grf148 0x%llx pos58 %d rot5C %d", pst ? pst->cnstrLin.kind : -1, pst ? pst->cnstrAng.kind : -1,
+                                int((Sort(palo).grf148 >> 35) & 1), (unsigned long long)Sort(palo).grf148,
+                                PxfPos(palo) ? PxfPos(palo)->mode : -9, PxfRot(palo) ? PxfRot(palo)->mode : -9);
+                    {
+                        STEPPHYS& st = StepPhysOf(palo);
+                        std::printf(" step floorT %.1f base %.1f floor %d gDist %.1f vecVel %.0f %.0f %.0f", st.sFloorTarget, st.vecBase.z,
+                                    int(st.pxpFloor != nullptr), st.pxpFloor ? st.pxpFloor->gDist : 0.0f, st.vecVel.x, st.vecVel.y, st.vecVel.z);
+                    }
+                    std::printf(" xfmode %d vel %.0f %.0f %.0f\n", palo->axf.empty() ? -1 : palo->axf[0]->mode,
+                                palo->axf.empty() ? 0.f : palo->axf[0]->vel.x, palo->axf.empty() ? 0.f : palo->axf[0]->vel.y,
+                                palo->axf.empty() ? 0.f : palo->axf[0]->vel.z);
+                }
             }
         std::printf("probepos: t %.1f camera at %.0f %.0f %.0f\n", g_clock.t, g_cm.pos.x, g_cm.pos.y, g_cm.pos.z);
         for (int i = 0; i < g_cm.ccpr; ++i)
