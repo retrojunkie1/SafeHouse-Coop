@@ -8,6 +8,7 @@
 #include "alo.h"
 #include "bone.h"
 #include "clock.h"
+#include "cm.h"
 #include "cls.h"
 #include "damage.h"
 #include "gl.h"
@@ -23,6 +24,7 @@
 #include "po.h"
 #include "savedata.h"
 #include "so.h"
+#include "sly.h"
 #include "sw.h"
 #include "task.h"
 #include "transition.h"
@@ -37,6 +39,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <typeinfo>
+#include "cplcy.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1484,8 +1488,108 @@ void DumpGuards(SW* psw)
     std::fflush(stdout);
 }
 
+// (PC debug, SLY2N_PROBE="x,y,z,r,step"): once, the hit geometry around a point: vertical rays on a grid (the floor
+// under each), and 8 horizontal rays from the centre (the walls); what each hits
+void ProbeGeometry(SW* psw)
+{
+    static int s_cstep = 0;
+    if (++s_cstep != 90) return;
+    float x = 0, y = 0, z = 0, r = 600, d = 100;
+    std::sscanf(std::getenv("SLY2N_PROBE"), "%f,%f,%f,%f,%f", &x, &y, &z, &r, &d);
+    std::vector<SOE*> apsoe;
+    for (const auto& up : psw->aploAll)
+    {
+        LO* plo = up.get();
+        if (!plo || !FCidDerivedFrom(plo->Cid(), 0x30)) continue;
+        ALO* palo = static_cast<ALO*>(plo);
+        OXA* poxa = Poxa(palo);
+        if (!poxa || poxa->pso != palo) continue;
+        UpdateAloBounds(palo);
+        if (poxa->posMax.x < x - r - 500 || poxa->posMin.x > x + r + 500 || poxa->posMax.y < y - r - 500 ||
+            poxa->posMin.y > y + r + 500 || poxa->posMax.z < z - 1500 || poxa->posMin.z > z + 1500)
+            continue;
+        for (SOE* pe : poxa->apsoe) apsoe.push_back(pe);
+    }
+    std::printf("probe: %zu shapes near %.0f %.0f %.0f\n", apsoe.size(), x, y, z);
+    std::unordered_map<int, int> mpc;
+    for (SOE* pe : apsoe) if (pe->palo) mpc[pe->palo->oid]++;
+    for (const auto& [oid, c] : mpc)
+    {
+        LO* plo = PloFindSwObjectByOid(psw, oid);
+        std::printf("probe:   object %d cid 0x%X: %d shapes\n", oid, plo ? int(plo->Cid()) : -1, c);
+    }
+    for (float yy = y - r; yy <= y + r; yy += d)
+    {
+        std::string line;
+        for (float xx = x - r; xx <= x + r; xx += d)
+        {
+            LSG lsg;
+            SOE* pe = PsoeHitTestLineObjects(0, glm::vec3(xx, yy, z + 400), glm::vec3(xx, yy, z - 800), apsoe, &lsg);
+            char sz[32];
+            if (pe) std::snprintf(sz, sizeof sz, " %5.0f", lsg.pos0.z);
+            else std::snprintf(sz, sizeof sz, "     .");
+            line += sz;
+        }
+        std::printf("probe: y %6.0f |%s\n", yy, line.c_str());
+    }
+    for (int k = 0; k < 8; ++k)
+    {
+        const float a = k * 3.14159265f / 4.0f;
+        const glm::vec3 p0(x, y, z + 80), p1 = p0 + glm::vec3(std::cos(a), std::sin(a), 0.0f) * 3000.0f;
+        LSG lsg;
+        SOE* pe = PsoeHitTestLineObjects(0, p0, p1, apsoe, &lsg);
+        std::printf("probe: wall at %3d deg: %s %.0f (object %d)\n", k * 45, pe ? "hit" : "none", pe ? glm::distance(lsg.pos0, p0) : 0.0f,
+                    pe && pe->palo ? pe->palo->oid : -1);
+    }
+    std::fflush(stdout);
+}
+
 void CoopStep(SW* psw)
 {
+    if (psw && std::getenv("SLY2N_PROBE")) ProbeGeometry(psw);
+    // (PC debug, SLY2N_TELEPORTTO="oid@t": the player to that object once, at game time t)
+    if (static const char* s_szT = std::getenv("SLY2N_TELEPORTTO"); s_szT && psw)
+    {
+        static bool s_fDone = false;
+        int oid = 0;
+        float t = 0.0f;
+        if (!s_fDone && std::sscanf(s_szT, "%d@%f", &oid, &t) == 2 && g_clock.t >= t)
+        {
+            s_fDone = true;
+            if (LO* plo = PloFindSwObjectByOid(psw, oid)) TeleportActor(PloPoCurrent(psw), plo), std::printf("teleported to %d\n", oid);
+        }
+    }
+    // (PC debug, SLY2N_TELEPORTPOS="x,y,z@t": the player to that place once)
+    if (static const char* s_szP = std::getenv("SLY2N_TELEPORTPOS"); s_szP && psw)
+    {
+        static bool s_fDone = false;
+        float x, y, z, t;
+        if (!s_fDone && std::sscanf(s_szP, "%f,%f,%f@%f", &x, &y, &z, &t) == 4 && g_clock.t >= t)
+        {
+            s_fDone = true;
+            LO* plo = PloPoCurrent(psw);
+            if (plo && FCidDerivedFrom(plo->Cid(), 0x30)) (PactorFromLo(plo) ? (SetStepPos(PactorFromLo(plo), glm::vec3(x, y, z)), PactorFromLo(plo)->safe.c = 0, SetAloVelocityTo(static_cast<ALO*>(plo), glm::vec3(0.0f)), SetAloAngVelocityTo(static_cast<ALO*>(plo), glm::vec3(0.0f)), 0) : 0), CutCm(&g_cm),
+                std::printf("teleported to %.0f %.0f %.0f\n", x, y, z);
+        }
+    }
+    // (PC debug, SLY2N_PROBEPOS="oid,oid,..": their places every second)
+    if (static const char* s_sz = std::getenv("SLY2N_PROBEPOS"); s_sz && psw && g_clock.t - std::floor(g_clock.t) < g_clock.dt)
+    {
+        for (const char* q = s_sz; q && *q; q = std::strchr(q, ',') ? std::strchr(q, ',') + 1 : nullptr)
+            if (LO* plo = PloFindSwObjectByOid(psw, std::atoi(q)))
+            {
+                const glm::vec3 p = PosLoWorld(plo);
+                ACTOR* pa = PactorFromLo(plo);
+                std::printf("probepos: t %.1f %d at %.0f %.0f %.0f inworld %d parent %d active %d po %d ctl %d \n", g_clock.t, plo->oid, p.x, p.y, p.z,
+                            int(plo->fInWorld), plo->paloParent ? plo->paloParent->oid : -1, int(FLoActive(plo)),
+                            PloPoCurrent(psw) == plo, NPoEnabled(plo));
+                if (SLY* ps = PslyFromLo(plo)) std::printf("probepos:   sly state %d\n", ps->state);
+            }
+        std::printf("probepos: t %.1f camera at %.0f %.0f %.0f\n", g_clock.t, g_cm.pos.x, g_cm.pos.y, g_cm.pos.z);
+        for (int i = 0; i < g_cm.ccpr; ++i)
+            std::printf("probepos:   policy %d: cpp %d %s focus %d\n", i, g_cm.acpr[i].cpp, g_cm.acpr[i].pcplcy ? typeid(*g_cm.acpr[i].pcplcy).name() : "-",
+                        g_cm.acpr[i].psoFocus ? g_cm.acpr[i].psoFocus->oid : -1);
+    }
     if (!FCoopActive()) return;
     ++s_stepLocal;
     Service();

@@ -35,6 +35,9 @@ void PrintRef(const CRef& ref, std::string* ps);  // bif.cpp (debug)
 #include "spliceobj.h"
 #include "cplcy.h"
 #include "smrun.h"
+#include "asega.h"
+#include "gang.h"
+#include "sly.h"
 #include "sw.h"
 #include "task.h"
 #include "transition.h"
@@ -120,6 +123,22 @@ struct SAFEHOUSE
     bool fMurrayQol = false;        // (QoL U33: Murray added in Episode 4, see RefSetSafeHouseStates)
 };
 std::unordered_map<const LO*, SAFEHOUSE> s_mpsh;
+
+// QoL (SafeHouse-Coop): the walkable safe house. On entering, the character the safe house shows takes the pad and
+// walks the hideout; standing by a gang member or the ThiefNet laptop sets the safe house's choice to it (its banner
+// shows "Press X to play as Bentley" / ThiefNet) and its button does the original action. SLY2_CLASSIC_SAFEHOUSE:
+// the original menu.
+bool FWalkableSafeHouse() { static const bool s_f = std::getenv("SLY2_CLASSIC_SAFEHOUSE") == nullptr; return s_f; }
+struct WALKSH
+{
+    LO* plosh = nullptr;      // the safe house shown
+    LO* ploActor = nullptr;   // the character walking it
+    int phase = 0;            // 1: entered (the switch to the character next), 2: walking
+    float tEnter = 0.0f;
+    OID oidNear = -1;         // the choice stood by (-1 none)
+};
+WALKSH s_walk;
+bool s_fWalkSwitch = false;   // (the character taking the pad: the safe house is not left)
 
 // orig 0x001D77D0: the safe house's state machine to the next allowed state (+0x220 / +0x224: option 1339) from
 // its current one, d steps along the machine's states (0: the current one if allowed, else the next)
@@ -238,7 +257,11 @@ void SetSafeHouseState(SW* psw, LO* plo, int n)
         Event(plo, 6);
     }
     sh.nState = n;
-    if (n != 1) return;
+    if (n != 1)
+    {
+        if (s_walk.plosh == plo) s_walk = WALKSH{};
+        return;
+    }
     // a job running (and not +0x74) ends
     if (JOB* pjob = psw->tasks.pjobCur; pjob && !pjob->f74) EndJob(psw, pjob);  // 0x162E38
     // the players (0x15E9C8(G, 5, 0x34, 0, 3): the first three of class 0x34): a carried booty put back (0x1433C8:
@@ -273,6 +296,7 @@ void SetSafeHouseState(SW* psw, LO* plo, int n)
     StepSafeHouse(plo, sh, 0);   // orig 0x1D77D0(p, 0)
     ClearJoySteps();             // orig 0x187E78
     Event(plo, 5);
+    if (FWalkableSafeHouse()) s_walk = WALKSH{plo, nullptr, 1, g_clock.t, -1};
 }
 }
 
@@ -481,7 +505,8 @@ void EnablePo(SW* psw, LO* plo, int n)
         SetPadctlControl(pd.ppadctl, n);
     }
     // the safe house's slot 79 (0x1D7418): its state with it
-    if (plo->pcls && plo->pcls->PfnOrig(79) == 0x1D7418 && (n == 0 || n == 1)) SetSafeHouseState(psw, plo, n);
+    if (plo->pcls && plo->pcls->PfnOrig(79) == 0x1D7418 && (n == 0 || n == 1) && !(s_fWalkSwitch && n == 0))
+        SetSafeHouseState(psw, plo, n);
     // the actors' slot 79 (0x1406E8, every caller here is the original's vt slot 79): after 0x1C3ED8 the pursued
     // record's mode (0x1F82B8: 0 = the guards place themselves by the camera's heading while it is the player, else
     // -1) and, when it takes the pad, its job list cleared (0x1EECD0)
@@ -507,9 +532,80 @@ void UpdateSafeHouse(LO* plo)
     auto it = s_mpsh.find(plo);
     if (it == s_mpsh.end()) return;
     SAFEHOUSE& sh = it->second;
+    if (std::getenv("SLY2N_WALKDBG")) { static int s_c = 0; if (s_c++ % 60 == 0) std::printf("safe house update: state %d psma %p shop %d menu %d walk %d phase %d\n", sh.nState, (void*)sh.psma, FShopShown(), FMenuShown(), s_walk.plosh == plo, s_walk.phase); }
     if (sh.nState != 1 || !sh.psma) return;
     if (FShopShown() || FMenuShown()) return;   // (0x14FD50: the camera's own; the shop / menus take the pad)
-    if (const int n = NStepLeftRight())
+    const bool fWalk = FWalkableSafeHouse() && s_walk.plosh == plo;
+    if (fWalk && s_walk.phase == 1)
+    {
+        // (once the safe house's camera has settled: the character it shows takes the pad, the safe house stays shown)
+        if (g_clock.t - s_walk.tEnter < 0.5f) return;
+        const OID oidCur = OidSmaCur(sh.psma);
+        const OID oidActor = (oidCur == 8 || oidCur == 9) ? oidCur : 7;
+        LO* pa = PloFindSwObjectByOid(g_psw, oidActor);
+        if (!pa) { s_walk = WALKSH{}; return; }
+        if (!pa->fInWorld) AddLo(g_psw, pa);
+        s_fWalkSwitch = true;
+        EnablePo(g_psw, pa, 1);
+        s_fWalkSwitch = false;
+        // (the safe house's scene holds the character at the table: its sequences on it retracted, its machine
+        // handle cleared, so its own movement (idle, walk) takes over)
+        if (FCidDerivedFrom(pa->Cid(), 0x30))
+        {
+            for (ASEGA* pasega : std::vector<ASEGA*>(g_apasega))
+                if (pasega && !pasega->fRetracted && pasega->palo == static_cast<ALO*>(pa)) RetractAsega(pasega);
+            if (ACTOR* pact = PactorFromLo(pa); pact && pact->psma) ClearSmaHandle(&pact->psma);
+            // (its scripted state (18: held by the scene) to standing)
+            if (SLY* psly = PslyFromLo(pa)) SetSlyState(psly, 0, 0);
+            else if (BENTLEY* pb = dynamic_cast<BENTLEY*>(PactorFromLo(pa))) SetBentleyState(pb, 0);
+            else if (MURRAY* pm = dynamic_cast<MURRAY*>(PactorFromLo(pa))) SetMurrayState(pm, 0);
+        }
+        s_walk.ploActor = pa;
+        s_walk.phase = 2;
+        std::printf("safe house: walking as %d\n", oidActor);
+        return;
+    }
+    if (fWalk)
+    {
+        if (s_walk.phase != 2) return;   // (3: a choice made, the original's action runs)
+        // the choice stood by: the other gang members (their places), ThiefNet (the table, the safe house's place)
+        if (!s_walk.ploActor || PloPoCurrent(g_psw) != s_walk.ploActor) return;
+        // (the safe house's fixed look-at camera (priority 10, its states' shots) taken off: the character's follow
+        // camera under it shows the walk; the states re-push it, so each step)
+        if (g_cm.ccpr > 1 && g_cm.acpr[0].cpp == 10 && dynamic_cast<CPLOOKAT*>(g_cm.acpr[0].pcplcy))
+            RevokeCmPolicy(&g_cm, 3, 10, g_cm.acpr[0].pcplcy, nullptr, nullptr);
+        const glm::vec3 posMe = PosLoWorld(s_walk.ploActor);
+        // (walked out of the hideout (it opens onto the street): the safe house left, as its exit does, the walk goes on
+        // in the hub)
+        if (glm::length(glm::vec2(posMe - PosLoWorld(plo))) > 520.0f)
+        {
+            std::printf("safe house: walked out\n");
+            s_walk = WALKSH{};
+            SetSafeHouseState(g_psw, plo, 0);
+            return;
+        }
+        const std::vector<OID> aoid = AoidAllowed(plo);
+        OID oidNear = -1;
+        float dBest = 170.0f;
+        for (OID oid : aoid)
+        {
+            if (oid == s_walk.ploActor->oid) continue;
+            glm::vec3 pos;
+            if (oid == 10) pos = PosLoWorld(plo);
+            else if (LO* pg = PloFindSwObjectByOid(g_psw, oid)) pos = PosLoWorld(pg);
+            else continue;
+            const float d = glm::length(glm::vec2(pos - posMe));
+            if (d < dBest) dBest = d, oidNear = oid;
+        }
+        if (oidNear != s_walk.oidNear)
+        {
+            s_walk.oidNear = oidNear;
+            if (oidNear >= 0) SetSmaGoal(sh.psma, oidNear);
+            std::printf("safe house: by %d\n", oidNear);
+        }
+        if (oidNear < 0) return;   // (nothing to choose: the button is the character's own)
+    }
+    else if (const int n = NStepLeftRight())
     {
         StepSafeHouse(plo, sh, n);
         return;
@@ -527,7 +623,12 @@ void UpdateSafeHouse(LO* plo)
     {
         if (o.eopid != 1338 || o.aval.size() < 3) continue;
         if (o.aval[0].n != oidCur) continue;
+        if (fWalk && oidCur != s_walk.oidNear) continue;
+        if (fWalk && s_walk.ploActor)
+            if (PODATA* ppd = PpodataFromLo(s_walk.ploActor); ppd && ppd->ppadctl) ForgetPadctlPresses(ppd->ppadctl, uint32_t(o.aval[1].n));   // (no jump)
         if (!GrfbtnTakePressed(uint32_t(o.aval[1].n))) continue;
+        if (fWalk && o.aval[2].n != 0x378) s_walk.phase = 3;   // (ThiefNet: the walk goes on after it)
+        if (fWalk) std::printf("safe house: chose %d\n", oidCur);
         const OID oidTarget = o.aval[2].n;
         if (oidTarget == -1) continue;
         if (oidTarget == 0x378) SetShopPage(0);

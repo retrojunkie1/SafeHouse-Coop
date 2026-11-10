@@ -39,3 +39,13 @@ players walking in the same world see each other; in different worlds the other 
 - `Libraries/enet`: ENet 1.3.18 (MIT).
 - Hooks: `main.cpp` (arguments, start / stop), `pccharacter.cpp` (the scene: the puppet's objects drawn), the
   `pcloader.h` world hooks (each step, each world start).
+
+## QoL: the walkable safe house
+
+Entering a safe house no longer puts you in the menu: the character it shows takes the pad and walks the hideout
+(po.cpp, `FWalkableSafeHouse`). Standing by a gang member or the ThiefNet laptop sets the safe house's choice to it,
+so its own banner ("Press X to play as Bentley", ThiefNet) shows and its button does the original action (jump held
+back there). Walking out of the hideout (it opens onto the street) leaves the safe house as its exit does.
+`SLY2_CLASSIC_SAFEHOUSE=1` brings back the original menu. Tested in Paris (the hideout at -2408, -3225).
+
+Debug switches (coop.cpp, PC only): `SLY2N_PROBE`, `SLY2N_PROBEPOS`, `SLY2N_TELEPORTTO`, `SLY2N_TELEPORTPOS`.
