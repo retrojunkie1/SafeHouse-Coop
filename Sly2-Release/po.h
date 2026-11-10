@@ -77,10 +77,12 @@ int UnlockSafeHouseCharacters(SW* psw);   // debug (F6): every character selecta
 int NSafeHousePrompt();   // (3: the wardrobe)
 // (the walkable safe house) its wardrobe (paint.h) while open: the character, the selected row (the slots, then
 // "Done"), each slot's preset (-1 the original)
+// rows: 0 the part, 1 its colour, 2 its brightness, 3 its saturation, 4 Done
 struct WARDROBEVIEW
 {
-    int ichar = 0, irow = 0, cslot = 0;
-    int aipreset[4]{};
+    int ichar = 0, irow = 0, ipart = 0, cpart = 0;
+    int ipreset = -1;           // the part's colour preset (-1: the original)
+    float sat = 1.0f, val = 1.0f;
 };
 bool FWardrobeView(WARDROBEVIEW* pv);
 struct ACTOR;

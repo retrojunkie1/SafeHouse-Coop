@@ -379,44 +379,44 @@ void DrawWardrobe(const WARDROBEVIEW& v)
     const FONTBRX* pfont = PfontHud();
     const FONTBRX* picons = PfontHudIcons();
     if (!pfont) return;
-    const float depth = 16000000.0f;
+    const float depth = 16000000.0f, zPlate = depth / 16777216.0f;
     const glm::vec4 white(200.0f, 200.0f, 200.0f, 0.0f), dim(110.0f, 110.0f, 110.0f, 0.0f), gold(230.0f, 190.0f, 60.0f, 0.0f);
     auto text = [&](const std::string& t, float x, float y, float sz, const glm::vec4& off) {
         g_hud.DrawTextBox(*pfont, picons, t, x - 320.0f, (y - 224.0f) * 1.1f, sz, 1.0f, 1.0f, 0.0f, 0.0f, 0, 0, off,
                           glm::vec4(1.0f), glm::vec4(0.0f), depth + 100.0f, false);
     };
-    const float x0 = 28.0f, y0 = 70.0f, w = 270.0f, hRow = 30.0f;
-    const int crow = v.cslot + 1;
-    const float h = 70.0f + crow * hRow + 34.0f;
-    g_hud.FillScreenRect(x0, y0, x0 + w, y0 + h, glm::vec4(0, 0, 0, 96), depth / 16777216.0f - 1e-4f);
+    auto hsv = [](float h, float sat, float val) {
+        const float hh = (h - std::floor(h)) * 6.0f;
+        const int i = int(hh) % 6;
+        const float f = hh - std::floor(hh), p = val * (1 - sat), q = val * (1 - sat * f), t = val * (1 - sat * (1 - f));
+        return i == 0 ? glm::vec3(val, t, p) : i == 1 ? glm::vec3(q, val, p) : i == 2 ? glm::vec3(p, val, t)
+             : i == 3 ? glm::vec3(p, q, val) : i == 4 ? glm::vec3(t, p, val) : glm::vec3(val, p, q);
+    };
+    const float x0 = 28.0f, y0 = 70.0f, w = 330.0f, hRow = 30.0f;
+    constexpr int crow = 5;
+    const float h = 62.0f + crow * hRow + 30.0f;
+    g_hud.FillScreenRect(x0, y0, x0 + w, y0 + h, glm::vec4(0, 0, 0, 96), zPlate - 1e-4f);
     text(std::string("Wardrobe: ") + SzPaintChar(v.ichar), x0 + 12.0f, y0 + 10.0f, 26.0f, gold);
+    const PAINTBAND& band = PaintBand(v.ichar, v.ipart);
+    const float hue = v.ipreset < 0 ? band.hue : PaintPreset(v.ipreset).hue;
+    auto pct = [](float g) { return std::to_string(int(std::lround(g * 100.0f))) + "%"; };
+    const char* aszLabel[crow] = {"Part", "Color", "Brightness", "Saturation", "Done"};
+    const std::string aszVal[crow] = {band.szName ? band.szName : "", v.ipreset < 0 ? "Original" : PaintPreset(v.ipreset).szName,
+                                      pct(v.val), pct(v.sat), ""};
     for (int r = 0; r < crow; ++r)
     {
         const float y = y0 + 52.0f + r * hRow;
         const bool fSel = r == v.irow;
-        if (fSel) g_hud.FillScreenRect(x0 + 6.0f, y - 3.0f, x0 + w - 6.0f, y + hRow - 5.0f, glm::vec4(255, 255, 255, 28), depth / 16777216.0f - 5e-5f);
-        if (r == v.cslot)
-        {
-            text("Done", x0 + 16.0f, y, 22.0f, fSel ? white : dim);
-            continue;
-        }
-        text(PaintBand(v.ichar, r).szName, x0 + 16.0f, y, 22.0f, fSel ? white : dim);
-        const int ip = v.aipreset[r];
-        const std::string val = ip < 0 ? "Original" : PaintPreset(ip).szName;
-        text(std::string(fSel ? "< " : "") + val + (fSel ? " >" : ""), x0 + 132.0f, y, 22.0f, fSel ? white : dim);
-        // the swatch: the preset's colour (the original: the band's own hue)
-        const float hue = ip < 0 ? PaintBand(v.ichar, r).hue : PaintPreset(ip).hue;
-        const float sat = ip < 0 ? 0.7f : std::clamp(0.75f * PaintPreset(ip).sat, 0.0f, 1.0f);
-        const float vv = ip < 0 ? 0.8f : std::clamp(0.8f * PaintPreset(ip).val, 0.0f, 1.0f);
-        const float hh = hue * 6.0f;
-        const int i = int(hh) % 6;
-        const float f = hh - std::floor(hh), p = vv * (1 - sat), q = vv * (1 - sat * f), t = vv * (1 - sat * (1 - f));
-        glm::vec3 rgb = i == 0 ? glm::vec3(vv, t, p) : i == 1 ? glm::vec3(q, vv, p) : i == 2 ? glm::vec3(p, vv, t)
-                      : i == 3 ? glm::vec3(p, q, vv) : i == 4 ? glm::vec3(t, p, vv) : glm::vec3(vv, p, q);
-        g_hud.FillScreenRect(x0 + w - 34.0f, y + 1.0f, x0 + w - 14.0f, y + 19.0f, glm::vec4(rgb * 255.0f, 128.0f), depth / 16777216.0f - 2e-5f);
+        if (fSel) g_hud.FillScreenRect(x0 + 6.0f, y - 3.0f, x0 + w - 6.0f, y + hRow - 5.0f, glm::vec4(255, 255, 255, 28), zPlate - 5e-5f);
+        text(aszLabel[r], x0 + 16.0f, y, 22.0f, fSel ? white : dim);
+        if (aszVal[r].empty()) continue;
+        text(std::string(fSel ? "< " : "") + aszVal[r] + (fSel ? " >" : ""), x0 + 160.0f, y, 22.0f, fSel ? white : dim);
     }
-    const std::string hint = picons ? "&2O&. Done" : "Circle: Done";
-    text(hint, x0 + 16.0f, y0 + h - 30.0f, 18.0f, dim);
+    // the part's colour as chosen (its hue at the chosen saturation and brightness)
+    const glm::vec3 rgb = hsv(hue, std::clamp(0.75f * v.sat, 0.0f, 1.0f), std::clamp(0.75f * v.val, 0.0f, 1.0f));
+    const float ySw = y0 + 52.0f + 1 * hRow;
+    g_hud.FillScreenRect(x0 + w - 36.0f, ySw - 1.0f, x0 + w - 12.0f, ySw + 21.0f, glm::vec4(rgb * 255.0f, 128.0f), zPlate - 2e-5f);
+    text(picons ? "&2O&. Done" : "Circle: Done", x0 + 16.0f, y0 + h - 30.0f, 18.0f, dim);
 }
 
 void DrawSafeHousePrompt()

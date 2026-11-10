@@ -131,7 +131,7 @@ void FillPaintUniforms(float* pv)
             }
             const bool fOn = b.szName && ps.fOn;
             v[0] = b.hue, v[1] = b.halfWidth, v[2] = b.satMin, v[3] = fOn ? 1.0f : 0.0f;
-            v[4] = ps.hue, v[5] = ps.sat, v[6] = ps.val, v[7] = 0.0f;
+            v[4] = ps.hue < 0.0f ? b.hue : ps.hue, v[5] = ps.sat, v[6] = ps.val, v[7] = 0.0f;   // (hue < 0: its own)
         }
     }
 }

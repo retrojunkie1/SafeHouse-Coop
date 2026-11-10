@@ -163,7 +163,7 @@ WALKSH s_walk;
 struct WARDROBE
 {
     bool fOpen = false;
-    int ichar = 0, irow = 0;
+    int ichar = 0, irow = 0, ipart = 0;
     int aipreset[CPAINTSLOT]{};
     uint32_t serialPos = 0;
     bool fPos = false;
@@ -180,7 +180,7 @@ int CWardrobeSlots(int ichar)
 // the slot's preset as the paints have it (-1: the original; a slot with a colour of no preset: its nearest hue's)
 int IPresetOfSlot(const PAINTSLOT& ps)
 {
-    if (!ps.fOn) return -1;
+    if (!ps.fOn || ps.hue < 0.0f) return -1;
     int iBest = 0;
     float dBest = 1e9f;
     for (int i = 0; i < CPaintPresets(); ++i)
@@ -238,6 +238,7 @@ void OpenWardrobe()
     s_wardrobe.fOpen = true;
     s_wardrobe.ichar = std::max(0, IPaintCharOfOid(s_walk.ploActor ? s_walk.ploActor->oid : 7));
     s_wardrobe.irow = 0;
+    s_wardrobe.ipart = 0;
     for (int s = 0; s < CPAINTSLOT; ++s) s_wardrobe.aipreset[s] = IPresetOfSlot(LocalPaint(s_wardrobe.ichar).aslot[s]);
     std::printf("safe house: wardrobe opened (%s)\n", SzPaintChar(s_wardrobe.ichar));
 }
@@ -250,8 +251,8 @@ void CloseWardrobe()
     std::printf("safe house: wardrobe closed\n");
 }
 
-// the wardrobe's pad (the game's layout): up / down a row, left / right a colour, Circle / Cross on "Done" or
-// Triangle closes
+// the wardrobe's pad (the game's layout): up / down a row; left / right the part, its colour, its brightness or its
+// saturation; Circle / Cross on "Done", or Triangle, closes
 void WardrobeInput(PADCTL* ppc)
 {
     auto press = [&](uint32_t btn) {
@@ -260,16 +261,19 @@ void WardrobeInput(PADCTL* ppc)
         ForgetPadctlPresses(ppc, grf);
         return true;
     };
-    const int cslot = CWardrobeSlots(s_wardrobe.ichar);
-    const int crow = cslot + 1;
+    constexpr int crow = 5;
+    const int cpart = CWardrobeSlots(s_wardrobe.ichar);
     if (press(BTN_Up)) s_wardrobe.irow = (s_wardrobe.irow + crow - 1) % crow;
     if (press(BTN_Down)) s_wardrobe.irow = (s_wardrobe.irow + 1) % crow;
     int d = 0;
     if (press(BTN_Left)) d = -1;
     if (press(BTN_Right)) d = 1;
     // (the stick too, once per push)
+    // (the D-pad drives the stick too on some bindings: the stick only while no D-pad direction is held)
+    constexpr uint32_t grfDpad = ((BTN_Up | BTN_Down | BTN_Left | BTN_Right) & 0xFF) << 8 | ((BTN_Up | BTN_Down | BTN_Left | BTN_Right) >> 8);
     static bool s_fStick = false;
-    if (std::fabs(ppc->x) > 0.6f || std::fabs(ppc->y) > 0.6f)
+    if ((ppc->grfbtn & grfDpad) || d) s_fStick = true;
+    else if (std::fabs(ppc->x) > 0.6f || std::fabs(ppc->y) > 0.6f)
     {
         if (!s_fStick)
         {
@@ -279,21 +283,41 @@ void WardrobeInput(PADCTL* ppc)
         s_fStick = true;
     }
     else s_fStick = false;
-    if (d && s_wardrobe.irow < cslot)
+    if (d && cpart > 0)
     {
-        const int cpre = CPaintPresets();
-        int& ip = s_wardrobe.aipreset[s_wardrobe.irow];
-        ip = (ip + 1 + d + (cpre + 1)) % (cpre + 1) - 1;   // (-1 .. cpre-1: the original first)
-        PAINTSLOT& ps = LocalPaint(s_wardrobe.ichar).aslot[s_wardrobe.irow];
-        if (ip < 0) ps.fOn = false;
-        else
+        const int is = s_wardrobe.ipart;
+        PAINTSLOT& ps = LocalPaint(s_wardrobe.ichar).aslot[is];
+        if (!ps.fOn) ps = {-1.0f, 1.0f, 1.0f, false};   // (the original: its own hue, unscaled)
+        auto step = [&](float& g, float gMin, float gMax) {
+            g = std::clamp(std::round((g + 0.1f * float(d)) * 10.0f) / 10.0f, gMin, gMax);
+        };
+        switch (s_wardrobe.irow)
         {
-            const PAINTPRESET& p = PaintPreset(ip);
-            ps = {p.hue, p.sat, p.val, true};
+        case 0: s_wardrobe.ipart = (is + d + cpart) % cpart; break;
+        case 1:
+        {
+            const int cpre = CPaintPresets();
+            int& ip = s_wardrobe.aipreset[is];
+            ip = (ip + 1 + d + (cpre + 1)) % (cpre + 1) - 1;   // (-1 .. cpre-1: the original first)
+            if (ip < 0) ps = {-1.0f, 1.0f, 1.0f, false};
+            else
+            {
+                const PAINTPRESET& p = PaintPreset(ip);
+                ps = {p.hue, p.sat, p.val, true};
+            }
+            break;
         }
-        MarkLocalPaintChanged();   // (live: the other player sees it as it is chosen)
+        case 2: step(ps.val, 0.3f, 1.8f); break;
+        case 3: step(ps.sat, 0.0f, 2.0f); break;
+        default: break;
+        }
+        if (s_wardrobe.irow >= 1 && s_wardrobe.irow <= 3)
+        {
+            ps.fOn = ps.hue >= 0.0f || std::fabs(ps.sat - 1.0f) > 0.01f || std::fabs(ps.val - 1.0f) > 0.01f;
+            MarkLocalPaintChanged();   // (live: the other player sees it as it is chosen)
+        }
     }
-    const bool fDone = s_wardrobe.irow == cslot && (press(BTN_Circle) || press(BTN_Cross));
+    const bool fDone = s_wardrobe.irow == crow - 1 && (press(BTN_Circle) || press(BTN_Cross));
     if (press(BTN_Triangle) || fDone || press(BTN_Circle)) CloseWardrobe();
 }
 bool s_fWalkSwitch = false;   // (the character taking the pad: the safe house is not left)
@@ -1286,7 +1310,11 @@ bool FWardrobeView(WARDROBEVIEW* pv)
     if (!s_wardrobe.fOpen) return false;
     pv->ichar = s_wardrobe.ichar;
     pv->irow = s_wardrobe.irow;
-    pv->cslot = CWardrobeSlots(s_wardrobe.ichar);
-    for (int s = 0; s < 4; ++s) pv->aipreset[s] = s_wardrobe.aipreset[s];
+    pv->ipart = s_wardrobe.ipart;
+    pv->cpart = CWardrobeSlots(s_wardrobe.ichar);
+    pv->ipreset = s_wardrobe.aipreset[s_wardrobe.ipart];
+    const PAINTSLOT& ps = LocalPaint(s_wardrobe.ichar).aslot[s_wardrobe.ipart];
+    pv->sat = ps.fOn ? ps.sat : 1.0f;
+    pv->val = ps.fOn ? ps.val : 1.0f;
     return true;
 }

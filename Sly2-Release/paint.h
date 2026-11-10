@@ -20,7 +20,7 @@ constexpr int CPAINTVEC = CPAINTPROFILE * CPAINTSLOT * 2;   // glob.frag's unifo
 
 struct PAINTSLOT
 {
-    float hue = 0.0f;   // the new hue (0..1); the band's own variation kept around it
+    float hue = 0.0f;   // the new hue (0..1; < 0: the original hue); the band's own variation kept around it
     float sat = 1.0f;   // saturation scale (0..2)
     float val = 1.0f;   // brightness scale (0.3..1.6)
     bool fOn = false;   // repainted (else the original)
