@@ -30,6 +30,7 @@
 #include "transition.h"
 #include "sly2_version.h"
 #include "paint.h"
+#include <set>
 
 #include <enet/enet.h>
 #include <GLFW/glfw3.h>
@@ -1594,6 +1595,45 @@ void CoopStep(SW* psw)
             s_fDone = true;
             for (int oid : {a, b})
                 if (LO* plo = PloFindSwObjectByOid(psw, oid); plo && plo->fInWorld) RemoveLo(psw, plo), std::printf("removed %d\n", oid);
+        }
+    }
+    // (PC tool, the cross-game skeleton test: SLY2N_SKELREPORT=FILE writes the gang's trees' structure once (numbers
+    // only: objects, parents, transform counts, the bone objects their meshes bind to))
+    if (static const char* s_szRep = std::getenv("SLY2N_SKELREPORT"); s_szRep && psw)
+    {
+        static int s_c = 0;
+        if (++s_c == 120)
+        {
+            FILE* pf = std::fopen(s_szRep, "w");
+            for (int oidRoot : {7, 8, 9})
+            {
+                LO* plo = PloFindSwObjectByOid(psw, oidRoot);
+                if (!pf || !plo || !FCidDerivedFrom(plo->Cid(), 0x30)) continue;
+                std::vector<const ALO*> apalo{static_cast<const ALO*>(plo)};
+                for (size_t i = 0; i < apalo.size(); ++i)
+                    for (const LO* pc : apalo[i]->aploChild)
+                        if (pc && FCidDerivedFrom(pc->Cid(), 0x30)) apalo.push_back(static_cast<const ALO*>(pc));
+                std::fprintf(pf, "tree %d objects %zu\n", oidRoot, apalo.size());
+                for (const ALO* pa : apalo)
+                {
+                    std::fprintf(pf, "  alo %d parent %d cid 0x%X xfs %zu", pa->oid, pa->paloParent ? pa->paloParent->oid : -1, pa->Cid(), pa->axf.size());
+                    if (pa->pglobset)
+                    {
+                        std::set<int> setBone;
+                        size_t cskin = 0;
+                        for (const GLOB& g : pa->pglobset->aglob)
+                        {
+                            cskin += !g.abone.empty();
+                            for (const GLOBBONE& b : g.abone) setBone.insert(b.oid);
+                        }
+                        std::fprintf(pf, " groups %zu skinned %zu bones", pa->pglobset->aglob.size(), cskin);
+                        for (int o : setBone) std::fprintf(pf, " %d", o);
+                    }
+                    std::fprintf(pf, "\n");
+                }
+            }
+            if (pf) std::fclose(pf);
+            std::printf("skeleton report written to %s\n", s_szRep);
         }
     }
     // (PC debug, SLY2N_LISTNEAR="x,y,z,r,frame": the objects near a point, once)

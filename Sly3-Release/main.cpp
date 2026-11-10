@@ -1,6 +1,7 @@
 // Sly2-Release: Sly 2: Band of Thieves as a native PC port (see PLAN.md).
 // Development commands for now; the game loop comes with milestone M2/M3.
 
+#include <set>
 #include "rumble.h"
 #include "bis.h"
 #include "display.h"
@@ -388,6 +389,12 @@ int main(int argc, char** argv)
         else if (!std::strcmp(argv[i], "--dump-world") && i + 1 < argc) { command = "dump-world"; arg = argv[++i]; }
         else if (!std::strcmp(argv[i], "--groups")) fDumpGroups = true;
         else if (!std::strcmp(argv[i], "--load-world") && i + 1 < argc) { command = "load-world"; arg = argv[++i]; }
+        else if (!std::strcmp(argv[i], "--skeleton-report") && i + 1 < argc)
+        {
+            static std::string s_szRep;
+            s_szRep = std::string("SLY3_SKELREPORT=") + argv[++i];
+            putenv(s_szRep.data());   // (the report's file: as the environment variable)
+        }
         else if (!std::strcmp(argv[i], "--load-trace") && i + 1 < argc) trace = argv[++i];
         else if (!std::strcmp(argv[i], "--dump-xf") && i + 1 < argc) dumpXf = argv[++i];
         else if (!std::strcmp(argv[i], "--world") && i + 1 < argc)
@@ -610,6 +617,47 @@ int main(int argc, char** argv)
             print("ALO part only", g_brxstats.mpcidcAloOnly);
             print("rest of the body skipped / misread", g_brxstats.mpcidcSkipped);
             print("read failed", g_brxstats.mpcidcError);
+        }
+        // (PC tool, the character repainter's cross-game test: SLY3_SKELREPORT=FILE writes each skinned object tree's
+        // structure (its objects, their parents, transform counts and the bone objects its meshes bind to): numbers
+        // only, no mesh, texture or animation data)
+        if (const char* pszRep = std::getenv("SLY3_SKELREPORT"); pszRep && fOk)
+        {
+            std::ofstream rep(cane::path(pszRep));
+            for (const auto& up : psw->aploAll)
+            {
+                if (!FCidDerivedFrom(up->Cid(), S3CID(0x30)) || up->paloParent) continue;
+                const ALO* proot = static_cast<const ALO*>(up.get());
+                std::vector<const ALO*> apalo{proot};
+                for (size_t i = 0; i < apalo.size(); ++i)
+                    for (const LO* pc : apalo[i]->aploChild)
+                        if (pc && FCidDerivedFrom(pc->Cid(), S3CID(0x30))) apalo.push_back(static_cast<const ALO*>(pc));
+                size_t cbone = 0;
+                for (const ALO* pa : apalo)
+                    if (pa->pglobset)
+                        for (const GLOB& g : pa->pglobset->aglob) cbone += g.abone.size();
+                if (cbone == 0) continue;   // (not skinned: no skeleton to compare)
+                rep << "tree " << proot->oid << " class " << StrClassName(proot->Cid()) << " objects " << apalo.size() << "\n";
+                for (const ALO* pa : apalo)
+                {
+                    rep << "  alo " << pa->oid << " parent " << (pa->paloParent ? pa->paloParent->oid : -1) << " class "
+                        << StrClassName(pa->Cid()) << " xfs " << pa->axf.size();
+                    if (pa->pglobset)
+                    {
+                        std::set<int> setBone;
+                        size_t cskin = 0;
+                        for (const GLOB& g : pa->pglobset->aglob)
+                        {
+                            cskin += !g.abone.empty();
+                            for (const GLOBBONE& b : g.abone) setBone.insert(b.oid);
+                        }
+                        rep << " groups " << pa->pglobset->aglob.size() << " skinned " << cskin << " bones";
+                        for (int o : setBone) rep << ' ' << o;
+                    }
+                    rep << "\n";
+                }
+            }
+            std::fprintf(stderr, "skeleton report written to %s\n", pszRep);
         }
         if (std::getenv("SLY3_CENSUS"))   // (debug: objects made per class, as the reference's tools/sly3/census.py lists a RAM)
         {
