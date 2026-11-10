@@ -32,6 +32,8 @@ void PrintRef(const CRef& ref, std::string* ps);  // bif.cpp (debug)
 #include "ref.h"
 #include "savedata.h"
 #include "scpt.h"
+#include "hudwidget.h"
+#include "interact.h"
 #include "spliceobj.h"
 #include "cplcy.h"
 #include "smrun.h"
@@ -142,6 +144,7 @@ struct WALKSH
     glm::vec3 posSeat{0.0f};  // the walking character's chair (its place at the table when it stood up)
     bool fBySeat = false;     // standing by it: Triangle sits down (the safe house's menu again)
     int cstepStand = 0;       // steps until it is set standing (placed first: its ground found by the physics)
+    bool fPromptSet = false;  // the menu's choice set for the walk (the banner taken off when by no one)
     bool fSitReq = false;     // the use button pressed by the table (taken before the character's own update)
     glm::vec3 posGood{0.0f};  // its last place over the hideout's floor (the deck's open edge held, see below)
     bool fGood = false;
@@ -273,6 +276,7 @@ void SetSafeHouseState(SW* psw, LO* plo, int n)
     if (n != 1)
     {
         if (s_walk.plosh == plo) s_walk = WALKSH{};
+        s_fArmed = false;   // (left (the menu's exit, walked out): walking in again once the player was away from it)
         return;
     }
     // a job running (and not +0x74) ends
@@ -699,15 +703,86 @@ int NSafeHousePromptImpl()
     return 0;
 }
 
-// (the walkable safe house, po.h) the safe house's own door: not offered (its use is a load into the menu; the
-// hideout is walked into through its open doorway)
-bool FSafeHouseDoorHiddenImpl(const LO* plo)
+// (the walkable safe house, po.h) the safe house's own door (a use by it whose script shuts a door (its first
+// state machine command) and swings it open (its last)): opened where it stands and walked through, the script (a
+// fade into the menu) not run; closed again once the player is away from it
+struct DOORSH
 {
-    if (!FWalkableSafeHouse() || !plo || !g_psw || !FIsLoDerivedFrom(const_cast<LO*>(plo), 0x23)) return false;
-    const glm::vec3 pos = PosLoWorld(const_cast<LO*>(plo));
+    SW* psw = nullptr;
+    LO* puse = nullptr;
+    int anOpen[3]{}, anClose[3]{};
+    bool fClose = false, fOpen = false;
+    float tOpen = 0.0f;
+};
+DOORSH s_door;
+
+void ApplyDoorSma(const int an[3])
+{
+    LO* po = PloFindSwObjectByOid(g_psw, an[0]);
+    if (!po || !FCidDerivedFrom(po->Cid(), 0x30))
+        for (const auto& q : g_psw->aploAll)   // (as the script's 0xD finds it: an instance's alias)
+            if (q->oidInstance == an[0] && FCidDerivedFrom(q->Cid(), 0x30))
+            {
+                po = q.get();
+                break;
+            }
+    if (!po) { std::printf("safe house: door object %d not found\n", an[0]); return; }
+    for (SMA* psma : g_apsma)
+        if (!psma->fRetracted && psma->palo == po && (an[1] == -1 || (psma->psm && psma->psm->oid == an[1])))
+        {
+            std::printf("safe house: door machine %d on %d: %d -> %d\n", psma->psm ? psma->psm->oid : -1, po->oid, OidSmaCur(psma), an[2]);
+            SetSmaGoal(psma, an[2]);
+            return;
+        }
+}
+
+bool FSafeHouseDoorUseImpl(LO* puse, ACTOR* pa)
+{
+    if (!FWalkableSafeHouse() || !puse || !g_psw || !FIsLoDerivedFrom(puse, 0x23) || std::getenv("SLY2N_SHOWDOOR")) return false;
+    const glm::vec3 pos = PosLoWorld(puse);
+    bool fNear = false;
     for (LO* psh : AploOfClass(g_psw, 0x46))
-        if (glm::length(glm::vec2(PosLoWorld(psh) - pos)) < 1100.0f) return true;
-    return false;
+        if (glm::length(glm::vec2(PosLoWorld(psh) - pos)) < 1100.0f) fNear = true;
+    if (!fNear) return false;
+    if (s_door.psw == g_psw && s_door.puse == puse)
+    {
+        // (used again: open / closed in turn)
+        s_door.fOpen = !s_door.fOpen;
+        ApplyDoorSma(s_door.fOpen || !s_door.fClose ? s_door.anOpen : s_door.anClose);
+        s_door.tOpen = g_clock.t;
+        std::printf("safe house: door %d %s\n", puse->oid, s_door.fOpen ? "opened" : "closed");
+        return true;
+    }
+    LO* pscpt = PloInteractOidField(puse, 0x114);
+    int an[8][3];
+    const int c = pscpt ? CScptSmaCommands(pscpt, an, 8) : 0;
+    if (c < 1) return false;
+    s_door = DOORSH{};
+    s_door.psw = g_psw, s_door.puse = puse;
+    // (the script snaps it shut first (its first command), then swings it open (its last) as the character pushes)
+    if (c > 1 && an[c - 1][0] == an[0][0])
+    {
+        std::copy(an[c - 1], an[c - 1] + 3, s_door.anOpen);
+        std::copy(an[0], an[0] + 3, s_door.anClose);
+        s_door.fClose = true;
+    }
+    else std::copy(an[0], an[0] + 3, s_door.anOpen);
+    s_door.fOpen = true, s_door.tOpen = g_clock.t;
+    ApplyDoorSma(s_door.anOpen);
+    std::printf("safe house: door %d opened (object %d to %d)\n", puse->oid, s_door.anOpen[0], s_door.anOpen[2]);
+    (void)pa;
+    return true;
+}
+
+// (the door left open: closed once the player is away from it a while)
+void UpdateSafeHouseDoor()
+{
+    if (s_door.psw != g_psw || !s_door.fOpen || !s_door.fClose || g_clock.t - s_door.tOpen < 3.0f) return;
+    LO* ppo = PloPoCurrent(g_psw);
+    if (!ppo || glm::length(PosLoWorld(ppo) - PosLoWorld(s_door.puse)) < 350.0f) return;
+    s_door.fOpen = false;
+    ApplyDoorSma(s_door.anClose);
+    std::printf("safe house: door %d closed\n", s_door.puse->oid);
 }
 
 void UpdateSafeHouse(LO* plo)
@@ -716,6 +791,7 @@ void UpdateSafeHouse(LO* plo)
     auto it = s_mpsh.find(plo);
     if (it == s_mpsh.end()) return;
     SAFEHOUSE& sh = it->second;
+    if (FWalkableSafeHouse()) UpdateSafeHouseDoor();
     if (std::getenv("SLY2N_WALKDBG")) { static int s_c = 0; if (s_c++ % 60 == 0) std::printf("safe house update: state %d psma %p shop %d menu %d walk %d phase %d\n", sh.nState, (void*)sh.psma, FShopShown(), FMenuShown(), s_walk.plosh == plo, s_walk.phase); }
     // (the walkable safe house: walking in through the doorway enters it, the walk going on)
     if (FWalkableSafeHouse() && sh.nState == 0)
@@ -862,10 +938,14 @@ void UpdateSafeHouse(LO* plo)
             s_fSitting = false;
             return;
         }
-        if (oidNear != s_walk.oidNear)
+        if (oidNear != s_walk.oidNear || !s_walk.fPromptSet)
         {
             s_walk.oidNear = oidNear;
-            if (oidNear >= 0) SetSmaGoal(sh.psma, oidNear);
+            s_walk.fPromptSet = true;
+            // (by no one: the menu's choice is the walking character's own and its banner ("play as ...") taken off;
+            // by a gang member, theirs (its banner shown by the machine's state change))
+            SetSmaGoal(sh.psma, oidNear >= 0 ? oidNear : s_walk.ploActor->oid);
+            if (oidNear < 0) HudPromptEnd(-1);
             std::printf("safe house: by %d\n", oidNear);
         }
         if (oidNear < 0) return;   // (nothing to choose: the button is the character's own)
@@ -1018,4 +1098,4 @@ int OidSafeHouseShown(const LO* plo, std::vector<OID>* paoidAllowed)
 }
 
 int NSafeHousePrompt() { return NSafeHousePromptImpl(); }
-bool FSafeHouseDoorHidden(const LO* plo) { return FSafeHouseDoorHiddenImpl(plo); }
+bool FSafeHouseDoorUse(LO* puse, ACTOR* pa) { return FSafeHouseDoorUseImpl(puse, pa); }

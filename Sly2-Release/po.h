@@ -75,4 +75,7 @@ int UnlockSafeHouseCharacters(SW* psw);   // debug (F6): every character selecta
 // (QoL, the walkable safe house) the prompt to draw (1: sit down, 2: stand up, 0: none); the safe house's own door
 // not offered (it is walked through)
 int NSafeHousePrompt();
-bool FSafeHouseDoorHidden(const LO* plo);
+struct ACTOR;
+// (the walkable safe house) its door used: opened (or closed) where it stands, walked through (its own use is a
+// fade into the menu); true: handled
+bool FSafeHouseDoorUse(LO* puse, ACTOR* pa);

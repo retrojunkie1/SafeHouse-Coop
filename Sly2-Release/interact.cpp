@@ -291,6 +291,7 @@ void SetHfdk(ACTOR* pa, int h)
 void UseObjectBase(LO* puse, ACTOR* pa)
 {
     if (!puse) return;
+    if (FSafeHouseDoorUse(puse, pa)) return;   // (QoL, po.h: the walkable safe house's door just opens)
     if (FPrint()) std::printf("interact t %.3f: %d uses %d (cid 0x%X)\n", g_clock.t, pa->palo->oid, puse->oid, puse->Cid());
     puse->SetField(0, 0x10C, static_cast<uint32_t>(pa->palo->oid));  // (+0x10C: the user)
     NotifyLo(puse, 6, puse);  // vt slot 4 (0x133508)

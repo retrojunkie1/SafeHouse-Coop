@@ -2438,6 +2438,20 @@ void EndScptLoad(LO* plo)
     ps->acmd.reserve(static_cast<size_t>(ps->cMax));
 }
 
+int CScptSmaCommands(LO* pscpt, int (*an)[3], int cMax)
+{
+    SCPT* ps = pscpt ? PscptOf(pscpt) : nullptr;
+    if (!ps) return 0;
+    int c = 0;
+    for (SCPTCMD& cmd : ps->acmd)
+        if (cmd.kind == 0x0D && c < cMax)
+        {
+            an[c][0] = cmd.N(0x10), an[c][1] = cmd.N(0x14), an[c][2] = cmd.N(0x18);
+            ++c;
+        }
+    return c;
+}
+
 void StartScpt(LO* pscpt, LO* ploStarter)
 {
     LO* plo = pscpt;

@@ -33,6 +33,8 @@ uint64_t IdScptCutscene();
 // (native QoL, skipcut.h) a pausing script's scene class: SKIPK_*
 enum { SKIPK_None = 0, SKIPK_Dialog = 1, SKIPK_Cinematic = 2 };
 int SceneSkipKind(LO* pscpt);
+// (native QoL, the walkable safe house) the script's state machine commands (0xD: object, machine, state), in order
+int CScptSmaCommands(LO* pscpt, int (*an)[3], int cMax);
 // the scripts' native data forgotten (a new world)
 void ResetScpts();
 

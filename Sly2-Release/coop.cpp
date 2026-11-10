@@ -1547,6 +1547,22 @@ void ProbeGeometry(SW* psw)
 void CoopStep(SW* psw)
 {
     if (psw && std::getenv("SLY2N_PROBE")) ProbeGeometry(psw);
+    // (PC debug, SLY2N_LISTNEAR="x,y,z,r,frame": the objects near a point, once)
+    if (static const char* s_sz = std::getenv("SLY2N_LISTNEAR"); s_sz && psw)
+    {
+        static int s_c = 0;
+        float x, y, z, r; int f;
+        if (std::sscanf(s_sz, "%f,%f,%f,%f,%d", &x, &y, &z, &r, &f) == 5 && ++s_c == f)
+            for (const auto& up : psw->aploAll)
+            {
+                LO* plo = up.get();
+                const glm::vec3 pos = PosLoWorld(plo);
+                if (glm::distance(pos, glm::vec3(x, y, z)) > r) continue;
+                LO* pp = plo->paloParent;
+                std::printf("near: oid %d cid 0x%X at %.0f %.0f %.0f inworld %d parent %d\n", plo->oid, plo->Cid(), pos.x, pos.y, pos.z,
+                            int(plo->fInWorld), pp ? pp->oid : -1);
+            }
+    }
     // (PC debug, SLY2N_TELEPORTTO="oid@t": the player to that object once, at game time t)
     if (static const char* s_szT = std::getenv("SLY2N_TELEPORTTO"); s_szT && psw)
     {
