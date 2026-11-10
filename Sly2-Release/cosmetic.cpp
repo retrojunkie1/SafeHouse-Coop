@@ -52,14 +52,19 @@ struct CHARRIG
     float sBackUp, sBackOut;     // the back's point: up from that record, out behind it
     std::vector<int> aiglobHat;  // the groups of its own hat (hidden by an item that replaces it)
     int oidCane;                 // the cane's object (Sly), -1 none
+    int aiboneFist[2];           // the fists' records (left, right), -1 none
+    int axisFistFwd, axisFistUp; // their axes for the punch's direction and the back of the hand
+    float sFistOut;              // the fist's centre along that direction from the record
+    int axisFistFwdL = 0, axisFistUpL = 0;   // the left's, when its record's axes differ (0: the same)
 };
 const CHARRIG s_arig[CPAINTCHAR] = {
     // Sly: the head record's x up, y back, z right; his cap is part of his head (not hidden)
-    {73, -1, -2, 1, 30.0f, 1.0f, 39, 45.0f, 14.0f, {}, 316},
+    {73, -1, -2, 1, 30.0f, 1.0f, 39, 45.0f, 14.0f, {}, 316, {-1, -1}, 1, 3, 0.0f},
     // Bentley: his hat (group 24, with its outline) placed by its own record: x forward, z up
-    {-1, 24, 1, 3, 4.0f, 1.5f, 27, 12.0f, 34.0f, {23, 24, 25}, -1},
-    // Murray: the head record's y forward, z down; his hat is part of his body (not hidden: worn over it)
-    {84, -1, 2, -3, 40.0f, 1.35f, 61, -6.0f, 38.0f, {}, -1},
+    {-1, 24, 1, 3, 4.0f, 1.5f, 27, 12.0f, 34.0f, {23, 24, 25}, -1, {-1, -1}, 1, 3, 0.0f},
+    // Murray: the head record's y forward, z down; his hat is part of his body (not hidden: worn over it); his hands'
+    // records 75 (left: y along the forearm) and 122 (right: -y), z the back of the hand
+    {84, -1, 2, -3, 40.0f, 1.35f, 61, -6.0f, 38.0f, {}, -1, {75, 122}, -2, 3, 8.0f, 2, 3},
 };
 
 // ------------------------------------------------------------ the items
@@ -210,7 +215,7 @@ void ScanItems()
             std::istringstream ss(v);
             if (k == "name") it.name = v;
             else if (k == "model") model = v;
-            else if (k == "slot") it.islot = v == "back" ? COSSLOT_Back : v == "hand" || v == "cane" ? COSSLOT_Hand : COSSLOT_Head;
+            else if (k == "slot") it.islot = v == "back" ? COSSLOT_Back : v == "hand" || v == "cane" ? COSSLOT_Hand : v == "fists" ? COSSLOT_Fists : COSSLOT_Head;
             else if (k == "characters")
             {
                 it.grfChar = 0;
@@ -229,6 +234,9 @@ void ScanItems()
             }
         }
         if (it.islot == COSSLOT_Hand) it.grfChar &= 1;   // (the hand: Sly's cane)
+        if (it.islot == COSSLOT_Fists)                    // (the fists: the characters with them placed)
+            for (int c = 0; c < CPAINTCHAR; ++c)
+                if (s_arig[c].aiboneFist[1] < 0) it.grfChar &= ~(1 << c);
         if (model.empty() || !FLoadObj(d / model, it))
         {
             std::fprintf(stderr, "cosmetics: %s: no model loaded\n", it.id.c_str());
@@ -328,9 +336,38 @@ void UploadItem(ITEM& it)
 
 // The attachment's world matrix: X forward (the character's heading), Z up (along its spine to its head), at the top of
 // its head / the middle of its back, scaled for the character; the hand: the cane's own placement
-bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat)
+bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat, int iside = 1)
 {
     const CHARRIG& rig = s_arig[ichar];
+    if (islot == COSSLOT_Fists)
+    {
+        // a fist (iside 0 left, 1 right): X the punch's direction, Z the back of the hand, at the fist's centre; the
+        // left one mirrored (its Y reversed) so one model fits both
+        const int ib = rig.aiboneFist[iside];
+        if (ib < 0 || ib >= int(proot->axf.size()) || !proot->axf[size_t(ib)]) return false;
+        const glm::mat4& mb = proot->axf[size_t(ib)]->matWorld;
+        if (std::getenv("SLY2N_RAWHAND"))   // (debug: the record's own frame)
+        {
+            *pmat = mb;
+            return true;
+        }
+        auto axisb = [&](int a) {
+            const glm::vec3 v = glm::normalize(glm::vec3(mb[std::abs(a) - 1]));
+            return a < 0 ? -v : v;
+        };
+        const glm::vec3 fwd = axisb(iside == 0 && rig.axisFistFwdL ? rig.axisFistFwdL : rig.axisFistFwd);
+        glm::vec3 up = axisb(iside == 0 && rig.axisFistUpL ? rig.axisFistUpL : rig.axisFistUp);
+        up = glm::normalize(up - fwd * glm::dot(up, fwd));
+        glm::vec3 side = glm::cross(up, fwd);
+        if (iside == 0) side = -side;
+        glm::mat4 m(1.0f);
+        m[0] = glm::vec4(fwd * rig.sScale, 0.0f);
+        m[1] = glm::vec4(side * rig.sScale, 0.0f);
+        m[2] = glm::vec4(up * rig.sScale, 0.0f);
+        m[3] = glm::vec4(glm::vec3(mb[3]) + fwd * rig.sFistOut, 1.0f);
+        *pmat = m;
+        return true;
+    }
     if (islot == COSSLOT_Hand)
     {
         if (rig.oidCane < 0) return false;
@@ -382,7 +419,7 @@ bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat)
 }
 }
 
-const char* SzCosSlot(int islot) { return islot == COSSLOT_Head ? "head" : islot == COSSLOT_Back ? "back" : "hand"; }
+const char* SzCosSlot(int islot) { return islot == COSSLOT_Head ? "head" : islot == COSSLOT_Back ? "back" : islot == COSSLOT_Fists ? "fists" : "hand"; }
 
 std::vector<std::string> AstrCosmetics(int ichar, int islot)
 {
@@ -508,6 +545,7 @@ void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const 
                 glm::mat4 m;
                 for (int s = 0; s < COSSLOT_Max; ++s)
                     if (FAttachMatrix(proot, ichar, s, &m)) pr(SzCosSlot(s), m);
+                if (FAttachMatrix(proot, ichar, COSSLOT_Fists, &m, 0)) pr("fist L", m);
                 if (s_c == 1 || std::getenv("SLY2N_COSBONES"))
                 {
                     const glm::vec3 p0 = PosLoWorld(proot);
@@ -519,6 +557,19 @@ void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const 
                             std::printf(" %zu:%.0f,%.0f,%.0f", i, d.x, d.y, d.z);
                         }
                     std::printf("\n");
+                    if (const char* szb = std::getenv("SLY2N_COSFRAMES"))   // (debug: "i,j,..": those records' frames)
+                    {
+                        glm::mat4 f = proot->apxfRef[1] ? proot->apxfRef[1]->matWorld : glm::mat4(1.0f);
+                        f[3] = glm::vec4(PosLoWorld(proot), 1.0f);
+                        std::stringstream ss(szb);
+                        for (std::string t; std::getline(ss, t, ',');)
+                            if (const size_t i = size_t(std::atoi(t.c_str())); i < proot->axf.size() && proot->axf[i])
+                            {
+                                const glm::mat4 r = glm::inverse(f) * proot->axf[i]->matWorld;
+                                std::printf("cosframe %d %zu: pos %.1f %.1f %.1f  x %.2f %.2f %.2f  y %.2f %.2f %.2f  z %.2f %.2f %.2f\n", proot->oid, i,
+                                            r[3].x, r[3].y, r[3].z, r[0].x, r[0].y, r[0].z, r[1].x, r[1].y, r[1].z, r[2].x, r[2].y, r[2].z);
+                            }
+                    }
                 }
             }
     }
@@ -527,10 +578,11 @@ void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const 
         const int ichar = IPaintCharOfOid(proot->oid);
         if (ichar < 0 || proot->gFade < 0.5f) continue;
         for (int s = 0; s < COSSLOT_Max; ++s)
+            for (int iside = 1; iside >= (s == COSSLOT_Fists ? 0 : 1); --iside)   // (the fists: both hands)
         {
             ITEM* p = PitemOf(StrEquippedFor(ichar, fRemote, s));
             glm::mat4 mat;
-            if (!p || !(p->grfChar >> ichar & 1) || !FAttachMatrix(proot, ichar, s, &mat)) continue;
+            if (!p || !(p->grfChar >> ichar & 1) || !FAttachMatrix(proot, ichar, s, &mat, iside)) continue;
             UploadItem(*p);
             const glm::mat4 m = mat * p->matOffset;
             glUniformMatrix4fv(s_sh.Loc("matModel"), 1, GL_FALSE, glm::value_ptr(m));

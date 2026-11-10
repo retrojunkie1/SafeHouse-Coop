@@ -3,8 +3,9 @@
 (item.ini, a Wavefront .obj and its .mtl). Usage: make_cosmetics.py OUT_DIR
 
 Frames (cosmetic.cpp): a head item's origin is the top of the head, a back item's the middle of the back, X forward,
-Z up; a hand item (Sly's cane) is in the cane's own frame (its shaft along X, the grip at the origin). Units: the
-game's (about a centimetre)."""
+Z up; a hand item (Sly's cane) is in the cane's own frame (its shaft along X, the grip at the origin); a fists item
+(Murray's) is one right fist, mirrored for the left: its centre at the origin, X the punch's direction, Z the back of
+the hand, +Y the thumb's side. Units: the game's (about a centimetre)."""
 import math
 import os
 import sys
@@ -77,6 +78,27 @@ class Mesh:
             for k in range(n):
                 k2 = (k + 1) % n
                 self.quad(m, pts[i][k], pts[i][k2], pts[i + 1][k2], pts[i + 1][k])
+
+    def torus(self, m, c, axis, R, r, n=14, nr=6):
+        """A ring around axis (unit) through c: radius R, tube radius r."""
+        tmp = (0, 0, 1) if abs(axis[2]) < 0.9 else (1, 0, 0)
+        u = norm(cross(axis, tmp))
+        w = cross(axis, u)
+        def pt(i, j):
+            a, b = 2 * math.pi * i / n, 2 * math.pi * j / nr
+            d = [math.cos(a) * u[k] + math.sin(a) * w[k] for k in range(3)]
+            return tuple(c[k] + (R + r * math.cos(b)) * d[k] + r * math.sin(b) * axis[k] for k in range(3))
+        for i in range(n):
+            for j in range(nr):
+                self.quad(m, pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1))
+
+    def tube(self, m, pts, r0, r1=None, n=8):
+        """A tube through points (x, y, z), its radius r0 tapering to r1."""
+        r1 = r0 if r1 is None else r1
+        for k in range(len(pts) - 1):
+            a = r0 + (r1 - r0) * k / (len(pts) - 1)
+            b = r0 + (r1 - r0) * (k + 1) / (len(pts) - 1)
+            self.cylinder(m, pts[k], pts[k + 1], a, b, n=n)
 
     def write(self, d, name):
         os.makedirs(d, exist_ok=True)
@@ -223,8 +245,181 @@ hides=cane
 """, m)
 
 
+CANE = """
+slot=hand
+characters=sly
+hides=cane
+"""
+
+
+def hook_curl(cx, cy, r, a0, a1, k=10):
+    """Points on an arc (the hooks' curls), angles in degrees."""
+    return [(cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / k)), cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / k)), 0)
+            for i in range(k + 1)]
+
+
+def cane_black_barrel(out):
+    """Your sheet's second cane: a black barrelled shaft, a chunky grip body at the hook's root and a curled gold hook."""
+    m = Mesh()
+    m.material("black", (0.10, 0.10, 0.12))
+    m.material("steel", (0.38, 0.39, 0.42))
+    m.material("gold", (0.93, 0.75, 0.20))
+    m.material("wood", (0.45, 0.24, 0.10))
+    m.cylinder("gold", (-44, 0, 0), (-40, 0, 0), 0.6, 2.0, n=10)
+    m.cylinder("black", (-40, 0, 0), (40, 0, 0), 2.0, n=10)
+    for x in (-30, -15, 0, 15, 30):                               # the barrel's rings
+        m.cylinder("steel", (x, 0, 0), (x + 1.5, 0, 0), 2.4, n=10)
+    m.box("black", (47, 1.5, 0), (14, 7, 5.5))                   # the grip body
+    m.box("wood", (45, -3.0, 0), (9, 3, 4.6))
+    m.cylinder("gold", (40, 0, 0), (41.5, 0, 0), 2.8, n=10)
+    # the hook: up out of the body, over, and curling back down into a tight spiral
+    pts = [(54, 2, 0), (66, 5, 0), (80, 11, 0), (94, 20, 0)] + hook_curl(96, 32, 12, -100, 120)[1:]
+    m.tube("gold", pts, 2.6, 1.2)
+    m.tube("gold", hook_curl(92, 31, 5, 120, 380, 8), 1.2, 0.5)
+    item(out, "cane_black_barrel", "name=Black barrel cane" + CANE, m)
+
+
+def cane_sail_blade(out):
+    """Your sheet's third cane: an orange wooden shaft wound with a spiral, and a big pale sail-shaped hook striped dark."""
+    m = Mesh()
+    m.material("wood", (0.86, 0.46, 0.14))
+    m.material("spiral", (0.42, 0.20, 0.07))
+    m.material("blade", (0.90, 0.88, 0.80))
+    m.material("stripe", (0.20, 0.20, 0.24))
+    m.cylinder("spiral", (-44, 0, 0), (-40, 0, 0), 0.8, 1.9, n=10)
+    m.cylinder("wood", (-40, 0, 0), (54, 0, 0), 1.9, n=10)
+    sp = [(x, 2.0 * math.cos(x * 0.45), 2.0 * math.sin(x * 0.45)) for x in [-40 + 1.0 * i for i in range(95)]]
+    m.tube("spiral", sp, 0.55, n=5)
+    # the blade: a thick plate in the XY plane, its outline a sail curving up and back
+    outline = [(52, -3), (64, -2), (80, 2), (96, 9), (110, 18), (120, 28), (122, 37), (114, 40), (104, 35), (92, 28),
+               (78, 19), (64, 10), (54, 6)]
+    th = 1.2
+    cx, cy = 90.0, 18.0
+    for k in range(len(outline)):
+        a, b = outline[k], outline[(k + 1) % len(outline)]
+        m.tri("blade", (cx, cy, th), (a[0], a[1], th), (b[0], b[1], th))
+        m.tri("blade", (cx, cy, -th), (b[0], b[1], -th), (a[0], a[1], -th))
+        m.quad("blade", (a[0], a[1], th), (a[0], a[1], -th), (b[0], b[1], -th), (b[0], b[1], th))
+    for (x0, y0, x1, y1) in [(70, 1, 64, 11), (84, 5, 76, 18), (98, 12, 90, 27), (111, 20, 104, 35)]:   # the stripes
+        for z in (th + 0.15, -th - 0.15):
+            m.quad("stripe", (x0, y0, z), (x0 + 3, y0 + 0.5, z), (x1 + 3, y1 + 0.5, z), (x1, y1, z))
+    item(out, "cane_sail_blade", "name=Sail blade cane" + CANE, m)
+
+
+def cane_gold_bolt(out):
+    """Your sheet's fifth cane: a red-brown shaft, gold end caps, a golden zigzag hook."""
+    m = Mesh()
+    m.material("shaft", (0.48, 0.16, 0.10))
+    m.material("gold", (0.95, 0.77, 0.22))
+    m.cylinder("gold", (-46, 0, 0), (-40, 0, 0), 0.8, 2.3, n=10)
+    m.cylinder("shaft", (-40, 0, 0), (48, 0, 0), 1.9, n=10)
+    m.cylinder("gold", (48, 0, 0), (55, 0, 0), 2.4, 2.4, n=10)
+    zz = [(55, 0, 0), (76, 14, 0), (68, 19, 0), (96, 30, 0), (88, 35, 0), (118, 40, 0)]
+    m.tube("gold", zz, 2.5, 1.6)
+    m.cylinder("gold", (118, 40, 0), (126, 37, 0), 1.6, 0.1, n=8)
+    item(out, "cane_gold_bolt", "name=Gold bolt cane" + CANE, m)
+
+
+def cane_wrapped_zigzag(out):
+    """Your sheet's sixth cane: shaft and zigzag hook wrapped in olive and white bands."""
+    m = Mesh()
+    m.material("olive", (0.42, 0.45, 0.20))
+    m.material("white", (0.90, 0.89, 0.84))
+    m.material("tip", (0.25, 0.25, 0.22))
+    m.cylinder("tip", (-45, 0, 0), (-41, 0, 0), 0.8, 2.0, n=8)
+    path = [(-41, 0, 0), (54, 0, 0), (72, 16, 0), (63, 22, 0), (110, 32, 0)]
+    # bands every 6 units along the path, alternating colours
+    seg = []
+    for a, b in zip(path, path[1:]):
+        ln = math.dist(a, b)
+        nb = max(1, int(ln // 6))
+        for i in range(nb):
+            seg.append((tuple(a[k] + (b[k] - a[k]) * i / nb for k in range(3)), tuple(a[k] + (b[k] - a[k]) * (i + 1) / nb for k in range(3))))
+    for i, (a, b) in enumerate(seg):
+        m.cylinder("olive" if i % 2 == 0 else "white", a, b, 2.2 if i % 2 == 0 else 2.0, n=8)
+    m.cylinder("olive", (110, 32, 0), (120, 29, 0), 2.0, 0.1, n=8)
+    item(out, "cane_wrapped_zigzag", "name=Wrapped zigzag cane" + CANE, m)
+
+
+FISTS = """
+slot=fists
+characters=murray
+"""
+
+
+def boxing_gloves(out):
+    m = Mesh()
+    m.material("glove", (0.80, 0.10, 0.10))
+    m.material("cuff", (0.93, 0.92, 0.88))
+    m.material("lace", (0.20, 0.20, 0.22))
+    m.ellipsoid("glove", (2, 0, 0.5), (14, 11.5, 11), n=16)               # the padded fist
+    m.ellipsoid("glove", (-1, 9.5, -3), (8, 5, 5.5), n=10)                # the thumb along its side
+    m.cylinder("cuff", (-15, 0, 0), (-7, 0, 0), 8.5, 9.5, n=16)
+    m.cylinder("lace", (-7.5, 0, 0), (-6.5, 0, 0), 9.8, n=16, caps=False)
+    for x in (-13, -10.5):
+        m.box("lace", (x, 0, 9.4), (1.0, 5, 0.8))
+    item(out, "boxing_gloves", "name=Boxing gloves" + FISTS, m)
+
+
+def brass_knuckles(out):
+    m = Mesh()
+    m.material("brass", (0.86, 0.68, 0.24))
+    for y in (-6.6, -2.2, 2.2, 6.6):                                     # a ring on each finger, the knuckles forward
+        m.torus("brass", (6, y, 1), (0, 1, 0), 3.4, 1.1, n=12, nr=5)
+        m.box("brass", (9.8, y, 1), (1.6, 3.8, 6))                        # their striking face
+    m.box("brass", (10, 0, 1), (1.4, 17, 3))
+    m.tube("brass", [(2, -8, -5), (0, -3, -7), (0, 3, -7), (2, 8, -5)], 1.6)   # the grip bar in the palm
+    item(out, "brass_knuckles", "name=Brass knuckles" + FISTS, m)
+
+
+def oven_mitts(out):
+    m = Mesh()
+    m.material("quilt", (0.96, 0.62, 0.70))
+    m.material("check", (0.98, 0.95, 0.90))
+    m.material("trim", (0.65, 0.18, 0.30))
+    m.ellipsoid("quilt", (3, 0, 0), (15, 12, 11.5), n=16)
+    m.ellipsoid("quilt", (0, 11, -2), (9, 5.5, 6), n=10)
+    for (x, y) in [(-4, -6), (-4, 6), (6, 0), (6, -10), (6, 10), (14, -5), (14, 5)]:   # the quilting's checks
+        z = 11.5 * math.sqrt(max(0.0, 1 - ((x - 3) / 15) ** 2 - (y / 12) ** 2))
+        m.ellipsoid("check", (x, y, z - 0.6), (2.6, 2.6, 0.9), n=8)
+    m.cylinder("trim", (-17, 0, 0), (-9, 0, 0), 10, 11, n=16)
+    m.torus("trim", (-19, 0, 6), (0, 1, 0), 3, 0.7, n=10, nr=4)              # the hanging loop
+    item(out, "oven_mitts", "name=Oven mitts" + FISTS, m)
+
+
+def foam_fingers(out):
+    m = Mesh()
+    m.material("foam", (0.98, 0.80, 0.10))
+    m.material("cuff", (0.12, 0.30, 0.75))
+    m.box("foam", (2, 0, 0), (20, 22, 20))                                # the big foam hand
+    m.box("foam", (0, 12.5, -3), (12, 5, 7))                              # its thumb
+    m.box("foam", (8, -5, 25), (7, 8, 32))                                 # the pointing finger, up
+    m.ellipsoid("foam", (8, -5, 41), (3.5, 4, 3), n=10, zmin=0)
+    m.box("cuff", (-12, 0, 0), (8, 24, 22))
+    item(out, "foam_fingers", "name=Foam fingers" + FISTS, m)
+
+
+def crab_claws(out):
+    m = Mesh()
+    m.material("shell", (0.92, 0.32, 0.14))
+    m.material("tip", (0.98, 0.86, 0.70))
+    m.ellipsoid("shell", (0, 0, 0), (13, 10, 10), n=14)                  # the claw's palm
+    m.ellipsoid("shell", (16, 0, 5), (12, 5, 4.5), n=12)                  # the upper pincer
+    m.ellipsoid("shell", (14, 0, -5), (10, 4.5, 3.8), n=12)               # the lower one
+    m.ellipsoid("tip", (27, 0, 3.5), (3, 3, 2.5), n=8)
+    m.ellipsoid("tip", (23.5, 0, -4), (2.5, 2.5, 2), n=8)
+    for (x, z) in [(-4, 9), (4, 9.5), (0, -9)]:                           # its bumps
+        m.ellipsoid("shell", (x, 0, z), (2, 2, 1.6), n=8)
+    m.cylinder("shell", (-16, 0, 0), (-9, 0, 0), 7, 8.5, n=12)
+    item(out, "crab_claws", "name=Crab claws" + FISTS, m)
+
+
+ALL = (aviator_cap, thief_bandana, backpack, cane_golden_hook, cane_zigzag, cane_black_barrel, cane_sail_blade,
+       cane_gold_bolt, cane_wrapped_zigzag, boxing_gloves, brass_knuckles, oven_mitts, foam_fingers, crab_claws)
+
+
 if __name__ == "__main__":
     out = sys.argv[1] if len(sys.argv) > 1 else "Cosmetics"
-    for f in (aviator_cap, thief_bandana, backpack, cane_golden_hook, cane_zigzag):
+    for f in ALL:
         f(out)
     print("written to", out)
