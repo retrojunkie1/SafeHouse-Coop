@@ -60,15 +60,16 @@ struct CHARRIG
     int axisFistFwdL = 0, axisFistUpL = 0;   // the left's, when its record's axes differ (0: the same)
     float sFistScale = 0.0f;     // the fist items' size (0: sScale)
     std::vector<int> aaiRecHand[2];   // the records whose skinned vertices make each hand (their centre: the fist's)
+    float sHeadFwd = 0.0f;       // the head's point forward of the record (the head and face items)
 };
 const CHARRIG s_arig[CPAINTCHAR] = {
     // Sly: the head record's x up, y back, z right; his cap is part of his head (not hidden)
-    {73, -1, -2, 1, 30.0f, 1.0f, 39, 45.0f, 14.0f, {}, 316, {-1, -1}, 1, 3, 0.0f},
+    {73, -1, -2, 1, 30.0f, 1.0f, 39, 45.0f, 6.0f, {}, 316, {-1, -1}, 1, 3, 0.0f, 0, 0, 0.0f, {}, 3.0f},
     // Bentley: his hat (group 24, with its outline) placed by its own record: x forward, z up
-    {-1, 24, 1, 3, 4.0f, 1.5f, 27, 12.0f, 34.0f, {23, 24, 25}, -1, {-1, -1}, 1, 3, 0.0f},
+    {-1, 24, 1, 3, 4.0f, 1.5f, 27, 12.0f, 30.0f, {23, 24, 25}, -1, {-1, -1}, 1, 3, 0.0f, 0, 0, 0.0f, {}, 20.0f},
     // Murray: the head record's y forward, z down; his hat is part of his body (not hidden: worn over it); his hands'
     // records 75 (left: y along the forearm) and 122 (right: -y), z the back of the hand
-    {84, -1, 2, -3, 40.0f, 1.35f, 61, -6.0f, 38.0f, {}, -1, {75, 122}, -2, 3, 0.0f, 2, 3, 2.1f, {{76, 78, 80}, {124, 127, 129}}},
+    {84, -1, 2, -3, 55.0f, 1.35f, 61, -6.0f, 26.0f, {}, -1, {75, 122}, -2, 3, 0.0f, 2, 3, 2.1f, {{76, 78, 80}, {124, 127, 129}}, 12.0f},
 };
 
 // ------------------------------------------------------------ the items
@@ -219,7 +220,7 @@ void ScanItems()
             std::istringstream ss(v);
             if (k == "name") it.name = v;
             else if (k == "model") model = v;
-            else if (k == "slot") it.islot = v == "back" ? COSSLOT_Back : v == "hand" || v == "cane" ? COSSLOT_Hand : v == "fists" ? COSSLOT_Fists : COSSLOT_Head;
+            else if (k == "slot") it.islot = v == "back" ? COSSLOT_Back : v == "hand" || v == "cane" ? COSSLOT_Hand : v == "fists" ? COSSLOT_Fists : v == "face" ? COSSLOT_Face : COSSLOT_Head;
             else if (k == "characters")
             {
                 it.grfChar = 0;
@@ -241,7 +242,8 @@ void ScanItems()
         if (it.islot == COSSLOT_Fists)                    // (the fists: the characters with them placed)
             for (int c = 0; c < CPAINTCHAR; ++c)
                 if (s_arig[c].aiboneFist[1] < 0) it.grfChar &= ~(1 << c);
-        if (model.empty() || !FLoadObj(d / model, it))
+        if (model.empty() && (it.fHidesHat || it.fHidesCane)) {}   // (an item that only hides: "No hat")
+        else if (model.empty() || !FLoadObj(d / model, it))
         {
             std::fprintf(stderr, "cosmetics: %s: no model loaded\n", it.id.c_str());
             continue;
@@ -340,7 +342,7 @@ void UploadItem(ITEM& it)
 
 // The skinned vertices' centroids by their main record (index in proot->axf; debug and the fists' places): the
 // record -> {count, world centroid}
-std::map<int, std::pair<int, glm::vec3>> MpRecordCentroid(const ALO* proot)
+std::map<int, std::pair<int, glm::vec3>> MpRecordCentroid(const ALO* proot, std::vector<glm::vec3>* pavAll = nullptr)
 {
     std::map<int, std::pair<int, glm::vec3>> mp;
     const auto* paabind = PaabindOfAlo(proot);
@@ -372,6 +374,7 @@ std::map<int, std::pair<int, glm::vec3>> MpRecordCentroid(const ALO* proot)
             auto& e = mp[itr == mpxfirec.end() ? -1 : itr->second];
             e.first++;
             e.second += w / sw;
+            if (pavAll) pavAll->push_back(w / sw);
         }
     }
     for (auto& [k, e] : mp) e.second /= float(e.first);
@@ -472,7 +475,7 @@ bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat, int 
     fwd = glm::normalize(fwd - up * glm::dot(fwd, up));
     const glm::vec3 side = glm::cross(up, fwd);
     glm::vec3 pos;
-    if (islot == COSSLOT_Head) pos = glm::vec3(mh[3]) + up * rig.sHeadTop;
+    if (islot == COSSLOT_Head || islot == COSSLOT_Face) pos = glm::vec3(mh[3]) + up * rig.sHeadTop + fwd * rig.sHeadFwd;
     else
     {
         if (rig.iboneSpine >= int(proot->axf.size()) || !proot->axf[size_t(rig.iboneSpine)]) return false;
@@ -488,7 +491,7 @@ bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat, int 
 }
 }
 
-const char* SzCosSlot(int islot) { return islot == COSSLOT_Head ? "head" : islot == COSSLOT_Back ? "back" : islot == COSSLOT_Fists ? "fists" : "hand"; }
+const char* SzCosSlot(int islot) { return islot == COSSLOT_Head ? "head" : islot == COSSLOT_Back ? "back" : islot == COSSLOT_Fists ? "fists" : islot == COSSLOT_Face ? "face" : "hand"; }
 
 std::vector<std::string> AstrCosmetics(int ichar, int islot)
 {
@@ -561,8 +564,9 @@ bool FCosmeticHidesGlob(const ALO* palo, size_t iglob)
         return p && p->fHidesCane;
     }
     if (std::find(rig.aiglobHat.begin(), rig.aiglobHat.end(), int(iglob)) == rig.aiglobHat.end()) return false;
-    const ITEM* p = PitemOf(StrEquippedFor(ichar, fRemote, COSSLOT_Head));
-    return p && p->fHidesHat;
+    for (int s : {int(COSSLOT_Head), int(COSSLOT_Face)})
+        if (const ITEM* p = PitemOf(StrEquippedFor(ichar, fRemote, s)); p && p->fHidesHat) return true;
+    return false;
 }
 
 void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const float* pfog)
@@ -616,6 +620,31 @@ void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const 
                 for (int s = 0; s < COSSLOT_Max; ++s)
                     if (FAttachMatrix(proot, ichar, s, &m)) pr(SzCosSlot(s), m);
                 if (FAttachMatrix(proot, ichar, COSSLOT_Fists, &m, 0)) pr("fist L", m);
+                if (std::getenv("SLY2N_COSFIT"))   // (debug: the head's and the back's surfaces about their places)
+                {
+                    std::vector<glm::vec3> av;
+                    MpRecordCentroid(proot, &av);
+                    for (int s : {int(COSSLOT_Head), int(COSSLOT_Back)})
+                    {
+                        if (!FAttachMatrix(proot, ichar, s, &m)) continue;
+                        glm::mat4 u = m;
+                        for (int c = 0; c < 3; ++c) u[c] = glm::vec4(glm::normalize(glm::vec3(m[c])), 0.0f);
+                        const glm::mat4 ui = glm::inverse(u);
+                        int c = 0;
+                        glm::vec3 sum(0.0f), lo(1e9f), hi(-1e9f);
+                        for (const glm::vec3& w : av)
+                        {
+                            const glm::vec3 l = glm::vec3(ui * glm::vec4(w, 1.0f));
+                            const bool fIn = s == COSSLOT_Head ? (l.x * l.x + l.y * l.y < 40.0f * 40.0f && l.z > -45.0f && l.z < 20.0f)
+                                                               : (std::abs(l.z) < 10.0f && std::abs(l.y) < 12.0f && std::abs(l.x) < 70.0f);
+                            if (!fIn) continue;
+                            ++c, sum += l, lo = glm::min(lo, l), hi = glm::max(hi, l);
+                        }
+                        if (c) sum /= float(c);
+                        std::printf("cosfit %d %s: %d verts centre %.1f %.1f %.1f  x %.1f..%.1f  y %.1f..%.1f  z %.1f..%.1f\n", proot->oid,
+                                    SzCosSlot(s), c, sum.x, sum.y, sum.z, lo.x, hi.x, lo.y, hi.y, lo.z, hi.z);
+                    }
+                }
                 if (s_c == 1 || std::getenv("SLY2N_COSBONES"))
                 {
                     const glm::vec3 p0 = PosLoWorld(proot);
@@ -663,7 +692,7 @@ void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const 
         {
             ITEM* p = PitemOf(StrEquippedFor(ichar, fRemote, s));
             glm::mat4 mat;
-            if (!p || !(p->grfChar >> ichar & 1) || !FAttachMatrix(proot, ichar, s, &mat, iside)) continue;
+            if (!p || p->avtx.empty() || !(p->grfChar >> ichar & 1) || !FAttachMatrix(proot, ichar, s, &mat, iside)) continue;
             UploadItem(*p);
             const glm::mat4 m = mat * p->matOffset;
             glUniformMatrix4fv(s_sh.Loc("matModel"), 1, GL_FALSE, glm::value_ptr(m));

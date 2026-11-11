@@ -85,8 +85,8 @@ struct WARDROBEVIEW
     int ipreset = -1;           // the part's colour preset (-1: the original)
     float sat = 1.0f, val = 1.0f;
     int ccos = 0;                     // the worn items' rows (after Saturation): their labels and items
-    const char* aszCosLabel[4]{};
-    std::string astrCosVal[4];
+    const char* aszCosLabel[5]{};
+    std::string astrCosVal[5];
 };
 bool FWardrobeView(WARDROBEVIEW* pv);
 struct ACTOR;

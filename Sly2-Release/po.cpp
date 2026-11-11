@@ -175,7 +175,7 @@ struct WARDROBE
 std::vector<int> AislotWardrobeCos(int ichar)
 {
     std::vector<int> a;
-    for (int s = 0; s < COSSLOT_Max; ++s)
+    for (int s : {int(COSSLOT_Head), int(COSSLOT_Face), int(COSSLOT_Back), int(COSSLOT_Hand), int(COSSLOT_Fists)})
         if (!AstrCosmetics(ichar, s).empty()) a.push_back(s);
     return a;
 }
@@ -1345,8 +1345,8 @@ bool FWardrobeView(WARDROBEVIEW* pv)
     pv->ccos = 0;
     for (int islot : AislotWardrobeCos(s_wardrobe.ichar))
     {
-        if (pv->ccos >= 4) break;
-        pv->aszCosLabel[pv->ccos] = islot == COSSLOT_Head ? "Head" : islot == COSSLOT_Back ? "Back" : islot == COSSLOT_Fists ? "Fists" : "Cane";
+        if (pv->ccos >= 5) break;
+        pv->aszCosLabel[pv->ccos] = islot == COSSLOT_Head ? "Head" : islot == COSSLOT_Back ? "Back" : islot == COSSLOT_Fists ? "Fists" : islot == COSSLOT_Face ? "Face" : "Cane";
         const std::string id = StrEquipped(s_wardrobe.ichar, islot);
         pv->astrCosVal[pv->ccos] = id.empty() ? (islot == COSSLOT_Hand ? "Original" : "None") : StrCosmeticName(id);
         ++pv->ccos;

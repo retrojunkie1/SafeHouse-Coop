@@ -15,7 +15,7 @@ struct SCENE;
 struct CAMERA;
 struct RENDEROPTS;
 
-enum COSSLOT { COSSLOT_Head = 0, COSSLOT_Back = 1, COSSLOT_Hand = 2, COSSLOT_Fists = 3, COSSLOT_Max = 4 };
+enum COSSLOT { COSSLOT_Head = 0, COSSLOT_Back = 1, COSSLOT_Hand = 2, COSSLOT_Fists = 3, COSSLOT_Face = 4, COSSLOT_Max = 5 };
 
 // The items installed for a character (0..2) in a slot, by id (the folder's name), in order.
 std::vector<std::string> AstrCosmetics(int ichar, int islot);

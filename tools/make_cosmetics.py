@@ -414,8 +414,46 @@ def crab_claws(out):
     item(out, "crab_claws", "name=Crab claws" + FISTS, m)
 
 
+def thief_mask(out):
+    """A dark domino mask over the eyes (the face slot: the head's frame, the origin at the top of the head)."""
+    m = Mesh()
+    m.material("mask", (0.07, 0.10, 0.30))
+    R, cz, h = 12.0, -6.0, 6.0                     # its radius about the head's axis, its eye line, its height
+    na, nz = 28, 6
+    a0, a1 = -80.0, 80.0
+    eyes = [(-24.0, 0.0), (24.0, 0.0)]            # the eye holes (angle, height)
+    def p(a, z, r=R):
+        return (r * math.cos(math.radians(a)), r * math.sin(math.radians(a)), cz + z)
+    for i in range(na):
+        for j in range(nz):
+            aa, ab = a0 + (a1 - a0) * i / na, a0 + (a1 - a0) * (i + 1) / na
+            za, zb = -h / 2 + h * j / nz, -h / 2 + h * (j + 1) / nz
+            ac, zc = (aa + ab) / 2, (za + zb) / 2
+            if any(((ac - ea) / 11.0) ** 2 + ((zc - ez) / 2.3) ** 2 < 1.0 for ea, ez in eyes):
+                continue
+            m.quad("mask", p(aa, za), p(ab, za), p(ab, zb), p(aa, zb))
+            m.quad("mask", p(aa, za, R + 0.6), p(aa, zb, R + 0.6), p(ab, zb, R + 0.6), p(ab, za, R + 0.6))
+    for sgn in (-1, 1):                            # the pointed tips at the sides, swept back
+        a = sgn * a1
+        m.tri("mask", p(a, -h / 2), p(a, h / 2), p(sgn * (a1 + 22), 1.5, R - 1.5))
+        m.tri("mask", p(a, -h / 2, R + 0.6), p(sgn * (a1 + 22), 1.5, R - 0.9), p(a, h / 2, R + 0.6))
+    item(out, "thief_mask", """
+name=Sly's mask
+slot=face
+characters=bentley
+""", m)
+
+
+def no_hat(out):
+    """Only hides the character's own hat (Bentley's)."""
+    d = os.path.join(out, "no_hat")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "item.ini"), "w") as f:
+        f.write("name=No hat\nslot=head\ncharacters=bentley\nhides=hat\n")
+
+
 ALL = (aviator_cap, thief_bandana, backpack, cane_golden_hook, cane_zigzag, cane_black_barrel, cane_sail_blade,
-       cane_gold_bolt, cane_wrapped_zigzag, boxing_gloves, brass_knuckles, oven_mitts, foam_fingers, crab_claws)
+       cane_gold_bolt, cane_wrapped_zigzag, boxing_gloves, brass_knuckles, oven_mitts, foam_fingers, crab_claws, thief_mask, no_hat)
 
 
 if __name__ == "__main__":
