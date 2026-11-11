@@ -96,7 +96,7 @@ struct LauncherBackend {
                 if (config.contains("logging") && !config.at("logging").is_boolean())
                     config.erase("logging");
                 // Launcher preferences fall back to their defaults one by one.
-                for (auto key : {"sly2_iso_path", "sly3_iso_path", "last_game", "sly2_runtime", "browse_dir", "skipped_update"})
+                for (auto key : {"sly2_iso_path", "sly3_iso_path", "last_game", "sly2_runtime", "browse_dir", "skipped_update", "sly2_coop"})
                     if (config.contains(key) && !config.at(key).is_string()) config.erase(key);
                 // "sly2_wide_backgrounds" (Sly 2's "Widescreen backgrounds", removed 2026-11-05) is ignored and kept as it is.
                 for (auto key : {"show_logs", "start_fullscreen", "sly2_native_preview", "sly3_notice_hidden", "check_updates"})
@@ -151,6 +151,25 @@ struct LauncherBackend {
         }
     }
     void saveConfig() { writeJson(locations.config / "launcher.json", config); }
+    // SafeHouse-Coop: Sly 2's online co-op (launcher.json "sly2_coop": "off" or "steam"; COOP.md). Steam co-op starts
+    // Sly2-Release with --coop-steam: it hosts a friends-only Steam lobby and F8 invites a friend.
+    std::string sly2Coop() const {
+        const auto it = config.find("sly2_coop");
+        return it != config.end() && it->is_string() && it->get<std::string>() == "steam" ? "steam" : "off";
+    }
+    void setSly2Coop(const std::string& mode) {
+        config["sly2_coop"] = mode == "steam" ? "steam" : "off";
+        saveConfig();
+    }
+    // The Steam library co-op loads (beside Sly2-Release; not shipped: copied from a Steam game by the player).
+    bool steamLibraryPresent() const {
+        std::error_code ec;
+#ifdef _WIN32
+        return fs::is_regular_file(tools / "steam_api64.dll", ec);
+#else
+        return fs::is_regular_file(tools / "libsteam_api.so", ec);
+#endif
+    }
     // "Don't show again" on the Sly 3 early-development notice before Play (launcher.json "sly3_notice_hidden").
     bool sly3NoticeHidden() const { return config.value("sly3_notice_hidden", false); }
     void hideSly3Notice() {
@@ -391,6 +410,7 @@ struct LauncherBackend {
         std::vector<std::string> arguments{utf8(binary(runtime)), "--data-dir", utf8(dataDir(game)),
                                            "--user-dir", utf8(userDir(game))};
         for (auto& a : ps3HdArguments(game)) arguments.push_back(a);
+        if (game == GameId::Sly2 && sly2Coop() == "steam") arguments.push_back("--coop-steam");
         checkedProcess(arguments, tools, cancel, log);
     }
     // Sly 2's texture dump (Textures/ in the installation, MODDING.md): the converter writes it at install since

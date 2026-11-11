@@ -9,6 +9,27 @@ and Windows:
 
 SafeHouse contains no game data. You install each game from your own PlayStation 2 disc image (`.iso`).
 
+**This is SafeHouse-Coop** (github.com/retrojunkie1/SafeHouse-Coop), a fork of SafeHouse that adds to Sly 2:
+online co-op over Steam, a walkable safe house, and a wardrobe for character colors and cosmetics. Its updates come
+from the fork's releases.
+
+## Sly 2 online co-op
+
+1. Both players: in **Settings > Games > Sly 2**, set **Online co-op** to **Steam**.
+2. Both players: copy `steam_api64.dll` from the folder of any recent 64-bit Steam game into SafeHouse's `bin`
+   folder (SafeHouse does not ship Valve's files). Have Steam running, with **Spacewar** (free, Valve's Steamworks
+   sample) in your library: co-op borrows its app id, so Steam shows you playing Spacewar.
+3. Both players press **Play**. Each game hosts a friends-only lobby; press **F8** in game to open Steam's invite
+   dialog, or your friend right-clicks you in Steam and picks **Join Game** (their game must already be running).
+
+Both players need the same SafeHouse-Coop version and the same disc region. The window's title shows the connection.
+
+## The safe house wardrobe
+
+Walk around the safe house and use the wardrobe to recolor Sly, Bentley and Murray (color, brightness, saturation)
+and to wear cosmetics: hats, a bandana, a backpack, canes for Sly, a mask and "No hat" for Bentley, and fist items for
+Murray. Your co-op partner sees what you wear. Your own items go in `sly2/Mods/Cosmetics` (see `MODDING.md`).
+
 SafeHouse was called ProjectCane until November 2026. It is not affiliated with or endorsed by Sony Interactive
 Entertainment or Sucker Punch Productions.
 

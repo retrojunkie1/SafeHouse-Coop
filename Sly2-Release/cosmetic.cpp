@@ -191,15 +191,25 @@ void ScanItems()
 {
     if (s_fScanned) return;
     s_fScanned = true;
-    const std::string dirMods = g_disc.DirMods();
-    if (dirMods.empty()) return;
-    const fs::path dir = cane::path(dirMods) / "Cosmetics";
-    std::error_code ec;
-    if (!fs::is_directory(dir, ec)) return;
+    // the release's starter items (share/safehouse/sly2/Cosmetics), then the player's Mods/Cosmetics (an item of the
+    // same folder name there replaces the bundled one)
     std::vector<fs::path> adir;
-    for (const auto& e : fs::directory_iterator(dir, ec))
-        if (e.is_directory()) adir.push_back(e.path());
-    std::sort(adir.begin(), adir.end());
+    std::error_code ec;
+    auto scan = [&](const fs::path& dir) {
+        if (!fs::is_directory(dir, ec)) return;
+        std::vector<fs::path> a;
+        for (const auto& e : fs::directory_iterator(dir, ec))
+            if (e.is_directory()) a.push_back(e.path());
+        std::sort(a.begin(), a.end());
+        for (const fs::path& d : a)
+        {
+            const auto itOld = std::find_if(adir.begin(), adir.end(), [&](const fs::path& o) { return o.filename() == d.filename(); });
+            if (itOld != adir.end()) *itOld = d;
+            else adir.push_back(d);
+        }
+    };
+    scan(cane::shareDirectory() / "safehouse" / "sly2" / "Cosmetics");
+    if (const std::string dirMods = g_disc.DirMods(); !dirMods.empty()) scan(cane::path(dirMods) / "Cosmetics");
     for (const fs::path& d : adir)
     {
         std::ifstream ini(d / "item.ini");

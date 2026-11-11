@@ -615,3 +615,27 @@ exception.
   by number (`Music/28.vpk`), so the mod works with any SafeHouse version.
 - **Sly 1:** zip your Mods folder's contents the same way. Players unzip them into their own Sly 1 Mods folder.
 - **Never share game files you did not make.** That includes original textures and dumps: share only your own work.
+
+## Sly 2 cosmetics (SafeHouse-Coop)
+
+The safe house wardrobe lists worn items from `share/safehouse/sly2/Cosmetics` (the starter items) and from your
+`sly2/Mods/Cosmetics`. Each item is a folder with an `item.ini` and a Wavefront `.obj` (with its `.mtl` colors or a
+`map_Kd` texture). A folder in your Mods with the same name as a starter item replaces it.
+
+```
+name=Aviator cap
+model=aviator_cap.obj
+slot=head            ; head, face, back, cane (Sly), fists (Murray: one right fist, mirrored for the left)
+characters=all       ; sly, bentley, murray (any of them) or all
+hides=hat            ; optional: hat (Bentley's own hat) and/or cane (Sly's cane)
+offset=0 0 0         ; optional, in the slot's frame
+rotate=0 0 0         ; optional, degrees about X, Y, Z
+scale=1              ; optional
+```
+
+Frames (game units, about a centimetre): head and face items have their origin on top of the head, X forward and Z
+up; back items the middle of the back; a cane is in the cane's own frame (the shaft along X from -40 to 54, the hook
+curling in +Y); a fists item is a right fist centred on the origin, X the punch's direction, Z the back of the hand.
+An `item.ini` with `hides=` and no `model` only hides (the starter "No hat"). In co-op, your partner sees an item
+only if they have it too (the starter items always match). `tools/make_cosmetics.py` in the source makes the
+starter items and shows how they are built.

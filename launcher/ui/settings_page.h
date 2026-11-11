@@ -1109,8 +1109,29 @@ private:
             caption(("Installs from: " + regions + (later.empty() ? "" : ". Recognized, not supported yet: " + later) + ".").c_str());
             ImGui::Unindent(px(16));
             if (LauncherBackend::ps3HdGame(g) && !installs.empty()) ps3HdRows(g, gameRunning);
+            if (g == GameId::Sly2 && !installs.empty()) coopRows(gameRunning);
             ImGui::PopID();
         }
+    }
+    // SafeHouse-Coop: Sly 2's online co-op (backend.h sly2Coop): Off, or Steam (lobbies, invites, Steam's relay).
+    void coopRows(bool gameRunning) {
+        gap(6);
+        static const std::vector<std::string> modes{ "Off", "Steam" };
+        int mode = m_backend.sly2Coop() == "steam" ? 1 : 0;
+        ImGui::BeginDisabled(gameRunning || m_fixture);
+        if (stepperRow("Online co-op", &mode, modes)) {
+            try {
+                m_backend.setSly2Coop(mode == 1 ? "steam" : "off");
+            } catch (...) {
+            }
+        }
+        ImGui::EndDisabled();
+        if (mode == 1 && !m_backend.steamLibraryPresent())
+            describe("Steam co-op needs steam_api64.dll in SafeHouse's bin folder: copy it from any recent 64-bit Steam game. "
+                     "Both players need Steam running and Spacewar (free) in their library.");
+        else
+            describe("Steam: play Sly 2 with a friend over Steam (no addresses or open ports). The game hosts a friends-only "
+                     "lobby; press F8 in game to invite, or your friend uses Join Game in Steam. Steam shows you in Spacewar.");
     }
     // The PS3 HD textures of a game (backend.h importPs3Hd): on / off, import from The Sly Collection (a disc image,
     // a .zip of one, or the extracted disc), with the job's progress and Cancel, and Remove. The cutscenes stay the

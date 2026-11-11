@@ -1,7 +1,7 @@
 #pragma once
 // The update check and the in-place update of the launcher's own package.
 //
-// Check: GitHub's API for the latest release of FridiNaTor1/SafeHouse (a generic User-Agent, nothing else is sent).
+// Check: GitHub's API for the latest release of retrojunkie1/SafeHouse-Coop (a generic User-Agent, nothing else is sent).
 // Every release carries SafeHouse-update.json (scripts/release-manifest.py): its version, commit, UTC build date and
 // each package's file name, size and SHA-256, plus which package updates which kind of installation.
 //
@@ -43,8 +43,8 @@
 #endif
 
 namespace cane::update {
-inline constexpr const char* defaultApiUrl = "https://api.github.com/repos/FridiNaTor1/SafeHouse/releases/latest";
-inline constexpr const char* releasesPage = "https://github.com/FridiNaTor1/SafeHouse/releases/latest";
+inline constexpr const char* defaultApiUrl = "https://api.github.com/repos/retrojunkie1/SafeHouse-Coop/releases/latest";
+inline constexpr const char* releasesPage = "https://github.com/retrojunkie1/SafeHouse-Coop/releases/latest";
 inline constexpr const char* manifestName = "SafeHouse-update.json";
 // Test hooks: another API address (a local server or, on Linux / macOS, a file:// URL), and with it a pretended
 // version / build date of this build (so a development build can be tested). Never used without the address.
