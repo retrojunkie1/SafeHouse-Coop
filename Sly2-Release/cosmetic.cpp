@@ -4,6 +4,8 @@
 
 #include "activate.h"
 #include "alo.h"
+#include "bone.h"
+#include "glob.h"
 #include "disc.h"
 #include "gl.h"
 #include "lo.h"
@@ -56,6 +58,8 @@ struct CHARRIG
     int axisFistFwd, axisFistUp; // their axes for the punch's direction and the back of the hand
     float sFistOut;              // the fist's centre along that direction from the record
     int axisFistFwdL = 0, axisFistUpL = 0;   // the left's, when its record's axes differ (0: the same)
+    float sFistScale = 0.0f;     // the fist items' size (0: sScale)
+    std::vector<int> aaiRecHand[2];   // the records whose skinned vertices make each hand (their centre: the fist's)
 };
 const CHARRIG s_arig[CPAINTCHAR] = {
     // Sly: the head record's x up, y back, z right; his cap is part of his head (not hidden)
@@ -64,7 +68,7 @@ const CHARRIG s_arig[CPAINTCHAR] = {
     {-1, 24, 1, 3, 4.0f, 1.5f, 27, 12.0f, 34.0f, {23, 24, 25}, -1, {-1, -1}, 1, 3, 0.0f},
     // Murray: the head record's y forward, z down; his hat is part of his body (not hidden: worn over it); his hands'
     // records 75 (left: y along the forearm) and 122 (right: -y), z the back of the hand
-    {84, -1, 2, -3, 40.0f, 1.35f, 61, -6.0f, 38.0f, {}, -1, {75, 122}, -2, 3, 8.0f, 2, 3},
+    {84, -1, 2, -3, 40.0f, 1.35f, 61, -6.0f, 38.0f, {}, -1, {75, 122}, -2, 3, 0.0f, 2, 3, 2.1f, {{76, 78, 80}, {124, 127, 129}}},
 };
 
 // ------------------------------------------------------------ the items
@@ -334,6 +338,66 @@ void UploadItem(ITEM& it)
     }
 }
 
+// The skinned vertices' centroids by their main record (index in proot->axf; debug and the fists' places): the
+// record -> {count, world centroid}
+std::map<int, std::pair<int, glm::vec3>> MpRecordCentroid(const ALO* proot)
+{
+    std::map<int, std::pair<int, glm::vec3>> mp;
+    const auto* paabind = PaabindOfAlo(proot);
+    if (!paabind || !proot->pglobset) return mp;
+    std::vector<glm::mat4> amat;
+    std::map<const XF*, int> mpxfirec;
+    for (size_t k = 0; k < proot->axf.size(); ++k) mpxfirec[proot->axf[k].get()] = int(k);
+    for (size_t ig = 0; ig < proot->pglobset->aglob.size() && ig < paabind->size(); ++ig)
+    {
+        const GLOB& g = proot->pglobset->aglob[ig];
+        const auto& abind = (*paabind)[ig];
+        if (abind.empty() || !FGlobBoneMatrices(proot, int(ig), &amat)) continue;
+        for (const VTXGLOB& v : g.avtx)
+        {
+            int jBest = 0;
+            glm::vec3 w(0.0f);
+            float sw = 0.0f;
+            for (int j = 0; j < 4; ++j)
+            {
+                if (!v.aw[j]) continue;
+                const size_t ib = std::min<size_t>(v.abone[j], amat.size() - 1);
+                w += float(v.aw[j]) * glm::vec3(amat[ib] * glm::vec4(v.pos, 1.0f));
+                sw += float(v.aw[j]);
+                if (v.aw[j] > v.aw[jBest]) jBest = j;
+            }
+            if (sw <= 0.0f) continue;
+            const XF* pxf = abind[std::min<size_t>(v.abone[jBest], abind.size() - 1)].pxfBone;
+            const auto itr = mpxfirec.find(pxf);
+            auto& e = mp[itr == mpxfirec.end() ? -1 : itr->second];
+            e.first++;
+            e.second += w / sw;
+        }
+    }
+    for (auto& [k, e] : mp) e.second /= float(e.first);
+    return mp;
+}
+
+// The centre of a hand's skinned vertices (the records listed), refreshed once per drawn frame
+int s_cDrawCosmetics = 0;
+bool FHandCentre(const ALO* proot, const std::vector<int>& airec, glm::vec3* ppos)
+{
+    static std::map<const ALO*, std::pair<int, std::map<int, std::pair<int, glm::vec3>>>> s_mp;
+    auto& e = s_mp[proot];
+    if (e.first != s_cDrawCosmetics || e.second.empty())
+    {
+        e.first = s_cDrawCosmetics;
+        e.second = MpRecordCentroid(proot);
+    }
+    int c = 0;
+    glm::vec3 sum(0.0f);
+    for (int k : airec)
+        if (auto it = e.second.find(k); it != e.second.end()) c += it->second.first, sum += it->second.second * float(it->second.first);
+    if (!c) return false;
+    *ppos = sum / float(c);
+    return true;
+}
+
 // The attachment's world matrix: X forward (the character's heading), Z up (along its spine to its head), at the top of
 // its head / the middle of its back, scaled for the character; the hand: the cane's own placement
 bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat, int iside = 1)
@@ -360,11 +424,16 @@ bool FAttachMatrix(const ALO* proot, int ichar, int islot, glm::mat4* pmat, int 
         up = glm::normalize(up - fwd * glm::dot(up, fwd));
         glm::vec3 side = glm::cross(up, fwd);
         if (iside == 0) side = -side;
+        // (SLY2N_FISTTUNE="out,scale": overrides for tuning)
+        float sOut = rig.sFistOut, sScale = rig.sFistScale > 0.0f ? rig.sFistScale : rig.sScale;
+        if (const char* szt = std::getenv("SLY2N_FISTTUNE")) std::sscanf(szt, "%f,%f", &sOut, &sScale);
         glm::mat4 m(1.0f);
-        m[0] = glm::vec4(fwd * rig.sScale, 0.0f);
-        m[1] = glm::vec4(side * rig.sScale, 0.0f);
-        m[2] = glm::vec4(up * rig.sScale, 0.0f);
-        m[3] = glm::vec4(glm::vec3(mb[3]) + fwd * rig.sFistOut, 1.0f);
+        m[0] = glm::vec4(fwd * sScale, 0.0f);
+        m[1] = glm::vec4(side * sScale, 0.0f);
+        m[2] = glm::vec4(up * sScale, 0.0f);
+        glm::vec3 pos = glm::vec3(mb[3]);
+        if (!rig.aaiRecHand[iside].empty()) FHandCentre(proot, rig.aaiRecHand[iside], &pos);
+        m[3] = glm::vec4(pos + fwd * sOut, 1.0f);
         *pmat = m;
         return true;
     }
@@ -499,6 +568,7 @@ bool FCosmeticHidesGlob(const ALO* palo, size_t iglob)
 void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const float* pfog)
 {
     if (!g_psw) return;
+    ++s_cDrawCosmetics;
     ScanItems();
     if (s_aitem.empty()) return;
     // the characters drawn: the gang's in this world, and the other player's copy
@@ -557,6 +627,17 @@ void DrawCosmetics(const float* pmatWorldToClip, const float* pposCamera, const 
                             std::printf(" %zu:%.0f,%.0f,%.0f", i, d.x, d.y, d.z);
                         }
                     std::printf("\n");
+                    if (std::getenv("SLY2N_COSVERTS"))   // (debug: the skinned vertices by their main record)
+                    {
+                        glm::mat4 f = proot->apxfRef[1] ? proot->apxfRef[1]->matWorld : glm::mat4(1.0f);
+                        f[3] = glm::vec4(PosLoWorld(proot), 1.0f);
+                        const glm::mat4 fi = glm::inverse(f);
+                        for (const auto& [k, e] : MpRecordCentroid(proot))
+                        {
+                            const glm::vec3 r = glm::vec3(fi * glm::vec4(e.second, 1.0f));
+                            std::printf("cosverts %d rec %d: %d at %.1f %.1f %.1f\n", proot->oid, k, e.first, r.x, r.y, r.z);
+                        }
+                    }
                     if (const char* szb = std::getenv("SLY2N_COSFRAMES"))   // (debug: "i,j,..": those records' frames)
                     {
                         glm::mat4 f = proot->apxfRef[1] ? proot->apxfRef[1]->matWorld : glm::mat4(1.0f);
