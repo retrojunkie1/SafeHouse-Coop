@@ -30,12 +30,29 @@ Sly2-Release --data-dir <installation> --user-dir <profile> --coop-host         
 Sly2-Release --data-dir <installation> --user-dir <profile> --coop-join HOST[:PORT]
 ```
 
-`--coop-name NAME` sets the name the other player sees. The window's title shows the connection and its ping. Both
+### Over Steam (no addresses, no open ports)
+
+`--coop-steam` (or `SLY2_COOP_STEAM=1`; `tools/Sly2 Co-op (Steam).bat` starts it from the release's `bin` folder)
+uses Steam lobbies and Steam's relay network instead of a direct connection (`steamnet.h`). It borrows Spacewar's
+app id (480, Valve's public Steamworks sample), so Steam shows you in "Spacewar"; both players need Steam running
+and Spacewar in their library (free).
+
+- The game loads `steam_api64.dll` from beside its exe at run time (Steamworks 1.48 or later: copy it from any recent
+  64-bit Steam game). Nothing of Valve's is in this repository; without the library the window's title says why.
+- Each game starts by hosting a friends-only lobby. **F8** opens Steam's invite dialog; the friend accepts the invite
+  or uses "Join Game" in the friends list and becomes the joiner (their game must be running: Steam would otherwise
+  start Spacewar itself). `+connect_lobby ID` on the command line joins a lobby directly.
+- The lobby carries the mod's name and co-op protocol: other Spacewar lobbies and other builds are turned away.
+- When the host leaves, the joiner goes back to hosting its own lobby.
+
+`--coop-name NAME` sets the name the other player sees (with Steam: your Steam name). The window's title shows the connection and its ping. Both
 players walking in the same world see each other; in different worlds the other is not drawn.
 
 ## Code
 
 - `Sly2-Release/coop.h`, `coop.cpp`: networking, the wire format, sending the pose, drawing the other player.
+- `Sly2-Release/steamnet.h`, `steamnet.cpp`: co-op over Steam (lobbies, invites, Steam's relay), the flat Steamworks
+  API loaded at run time.
 - `Libraries/enet`: ENet 1.3.18 (MIT).
 - Hooks: `main.cpp` (arguments, start / stop), `pccharacter.cpp` (the scene: the puppet's objects drawn), the
   `pcloader.h` world hooks (each step, each world start).

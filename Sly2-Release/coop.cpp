@@ -31,6 +31,7 @@
 #include "sly2_version.h"
 #include "paint.h"
 #include "cosmetic.h"
+#include "steamnet.h"
 #include <set>
 
 #include <enet/enet.h>
@@ -324,6 +325,10 @@ ENetHost* s_phost = nullptr;
 ENetPeer* s_ppeer = nullptr;       // the other player (connected and greeted)
 ENetPeer* s_ppeerPending = nullptr;
 bool s_fHelloOk = false;
+// Steam co-op (steamnet.h): the other player is this stand-in peer (its roundTripTime kept from Steam's ping)
+bool s_fSteam = false;
+uint64_t s_idLobbyJoin = 0;        // +connect_lobby ID
+ENetPeer s_peerSteam{};
 std::string s_nameRemote;
 std::string s_status = "";
 uint32_t s_stepLocal = 0;
@@ -449,6 +454,11 @@ uint64_t HashBytes(const uint8_t* pb, size_t cb)
 void Send(ENetPeer* ppeer, const WRITER& w, uint8_t chan, bool fReliable)
 {
     if (!ppeer) return;
+    if (ppeer == &s_peerSteam)
+    {
+        FSteamNetSend(w.ab.data(), w.ab.size(), chan, fReliable);
+        return;
+    }
     ENetPacket* pkt = enet_packet_create(w.ab.data(), w.ab.size(), fReliable ? ENET_PACKET_FLAG_RELIABLE : 0);
     enet_peer_send(ppeer, chan, pkt);
 }
@@ -471,8 +481,12 @@ void Refuse(ENetPeer* ppeer, const std::string& reason)
     w.Put<uint8_t>(MSG_Refuse);
     w.PutStr(reason);
     Send(ppeer, w, c_chanReliable, true);
-    enet_host_flush(s_phost);
-    enet_peer_disconnect_later(ppeer, 0);
+    if (ppeer == &s_peerSteam) SteamNetDropPeer();
+    else
+    {
+        enet_host_flush(s_phost);
+        enet_peer_disconnect_later(ppeer, 0);
+    }
     std::printf("co-op: refused the other player: %s\n", reason.c_str());
 }
 
@@ -803,7 +817,8 @@ void SendActors(SW* psw)
         PutTree(w, psw, s.second.second, cxfLeft);
     }
     if (!s_ppeer) return;
-    enet_peer_send(s_ppeer, c_chanActors, enet_packet_create(w.ab.data(), w.ab.size(), ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT));
+    if (s_ppeer == &s_peerSteam) FSteamNetSend(w.ab.data(), w.ab.size(), c_chanActors, false);
+    else enet_peer_send(s_ppeer, c_chanActors, enet_packet_create(w.ab.data(), w.ab.size(), ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT));
     static uint32_t s_cLogged = 0;
     if (s_cLogged < 3 && !asel.empty())
     {
@@ -1241,9 +1256,9 @@ void OnPaint(READER& r)
     std::printf("co-op: %s's character paints received\n", s_nameRemote.c_str());
 }
 
-void OnReceive(ENetPeer* ppeer, const ENetPacket* pkt)
+void OnReceive(ENetPeer* ppeer, const uint8_t* pb, size_t cb)
 {
-    READER r{pkt->data, pkt->dataLength};
+    READER r{pb, cb};
     const uint8_t msg = r.Get<uint8_t>();
     if (msg == MSG_Hello) { OnHello(ppeer, r); return; }
     if (msg == MSG_Refuse)
@@ -1289,8 +1304,53 @@ void Connect()
     std::printf("%s\n", s_status.c_str());
 }
 
+void OnPeerLost()
+{
+    std::printf("co-op: %s left\n", s_nameRemote.c_str());
+    s_ppeer = nullptr;
+    s_fHelloOk = false;
+    s_aposeRemote.clear();
+    ClearRemotePaints();
+    ClearRemoteCosmetics();
+    ResetRemote();
+    ResetMirror();
+}
+
+// Steam co-op: its events (the role follows the lobby: the game that joined another's lobby is the joiner)
+void ServiceSteam()
+{
+    STEAMEVENT ev;
+    while (FSteamNetPoll(&ev))
+        switch (ev.kind)
+        {
+        case STEAMEVENT::Connected:
+            if (s_ppeer) OnPeerLost();
+            s_opt.mode = ev.fJoiner ? COOPMODE_Join : COOPMODE_Host;
+            s_peerSteam = ENetPeer{};
+            SendHello(&s_peerSteam);
+            break;
+        case STEAMEVENT::Received:
+            OnReceive(&s_peerSteam, ev.ab.data(), ev.ab.size());
+            break;
+        case STEAMEVENT::Disconnected:
+            if (s_ppeer == &s_peerSteam) OnPeerLost();
+            s_opt.mode = COOPMODE_Host;
+            break;
+        }
+    if (FSteamNetHosting()) s_opt.mode = COOPMODE_Host;
+    if (FConnected() && s_stepLocal % 60 == 0) s_peerSteam.roundTripTime = uint32_t(std::max(0, NSteamNetPingMs()));
+    if (s_stepLocal % 120 == 0)
+        SteamNetSetPresence(FConnected() ? "In co-op with " + s_nameRemote : "Hosting Sly 2 co-op");
+    // F8: Steam's invite dialog (the window focused)
+    static bool s_fF8 = false;
+    const bool fF8 = g_gl.window && glfwGetWindowAttrib(g_gl.window, GLFW_FOCUSED) && glfwGetKey(g_gl.window, GLFW_KEY_F8) == GLFW_PRESS;
+    if (fF8 && !s_fF8) SteamNetOpenInvite();
+    s_fF8 = fF8;
+}
+
 void Service()
 {
+    if (s_fSteam) { ServiceSteam(); return; }
     if (!s_phost) return;
     if (s_opt.mode == COOPMODE_Join && !s_ppeer && !s_ppeerPending && TNow() >= s_tNextRetry) Connect();
     ENetEvent ev;
@@ -1305,20 +1365,11 @@ void Service()
             SendHello(ev.peer);
             break;
         case ENET_EVENT_TYPE_RECEIVE:
-            OnReceive(ev.peer, ev.packet);
+            OnReceive(ev.peer, ev.packet->data, ev.packet->dataLength);
             enet_packet_destroy(ev.packet);
             break;
         case ENET_EVENT_TYPE_DISCONNECT:
-            if (ev.peer == s_ppeer)
-            {
-                std::printf("co-op: %s left\n", s_nameRemote.c_str());
-                s_ppeer = nullptr;
-                s_fHelloOk = false;
-                s_aposeRemote.clear();
-                ClearRemotePaints();
-                ResetRemote();
-                ResetMirror();
-            }
+            if (ev.peer == s_ppeer) OnPeerLost();
             if (ev.peer == s_ppeerPending) s_ppeerPending = nullptr;
             if (s_opt.mode == COOPMODE_Join) s_tNextRetry = TNow() + 2.0;
             break;
@@ -1453,6 +1504,17 @@ bool FCoopParseArg(int argc, char** argv, int& i)
         }
         return true;
     }
+    if (!std::strcmp(sz, "--coop-steam"))
+    {
+        s_fSteam = true;
+        return true;
+    }
+    if (!std::strcmp(sz, "+connect_lobby"))   // (Steam's join: the lobby's id)
+    {
+        s_fSteam = true;
+        if (const char* p = next()) s_idLobbyJoin = std::strtoull(p, nullptr, 10);
+        return true;
+    }
     if (!std::strcmp(sz, "--coop-name"))
     {
         if (const char* p = next()) s_opt.name = p;
@@ -1476,6 +1538,25 @@ void CoopInit()
             int i = 0;
             FCoopParseArg(2, argv, i);
         }
+    }
+    if (const char* v = std::getenv("SLY2_COOP_STEAM"); v && *v && *v != '0') s_fSteam = true;
+    if (s_fSteam)
+    {
+        std::string strErr;
+        s_opt.mode = COOPMODE_Host;
+        if (s_idLobbyJoin) SteamNetJoinLobby(s_idLobbyJoin);
+        if (!FSteamNetInit(c_protocol, &strErr))
+        {
+            s_fSteam = false;
+            s_opt.mode = COOPMODE_Off;
+            s_status = "co-op (Steam) is off: " + strErr;
+            std::printf("%s\n", s_status.c_str());
+            s_opt.mode = COOPMODE_Off;
+            return;
+        }
+        if (s_opt.name.empty()) s_opt.name = StrSteamNetName();
+        if (s_opt.name.empty()) s_opt.name = SzDefaultName();
+        return;
     }
     if (s_opt.mode == COOPMODE_Off) return;
     if (s_opt.name.empty()) s_opt.name = SzDefaultName();
@@ -1512,6 +1593,12 @@ void CoopInit()
 
 void CoopShutdown()
 {
+    if (s_fSteam)
+    {
+        SteamNetShutdown();
+        s_fSteam = false;
+        return;
+    }
     if (!s_phost) return;
     if (s_ppeer) enet_peer_disconnect_now(s_ppeer, 0);
     enet_host_flush(s_phost);
@@ -1755,7 +1842,17 @@ void CoopStep(SW* psw)
             std::printf("probepos:   policy %d: cpp %d %s focus %d\n", i, g_cm.acpr[i].cpp, g_cm.acpr[i].pcplcy ? typeid(*g_cm.acpr[i].pcplcy).name() : "-",
                         g_cm.acpr[i].psoFocus ? g_cm.acpr[i].psoFocus->oid : -1);
     }
-    if (!FCoopActive()) return;
+    if (!FCoopActive())
+    {
+        // (Steam co-op asked for but off: its reason in the window's title, once)
+        static bool s_fTitled = false;
+        if (!s_fTitled && !s_status.empty() && g_gl.window)
+        {
+            s_fTitled = true;
+            glfwSetWindowTitle(g_gl.window, ("Sly 2: Band of Thieves  |  " + s_status).c_str());
+        }
+        return;
+    }
     ++s_stepLocal;
     Service();
     if (FPcKeptWorldsLoading()) PumpPcKeptWorlds(psw);   // (the debug menu pumps them only with Debug keys on)
@@ -1981,7 +2078,8 @@ bool FCoopTakeSceneRebuild()
 
 std::string SzCoopStatus()
 {
-    if (!FCoopActive()) return {};
+    if (!FCoopActive()) return s_status;   // (Steam co-op's reason for being off, else empty)
+    if (s_fSteam && !FConnected()) return StrSteamNetStatus();
     if (FConnected())
         return "co-op: " + s_nameRemote + " connected, " + std::to_string(s_ppeer->roundTripTime) + " ms";
     return s_status;
